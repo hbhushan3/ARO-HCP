@@ -1,0 +1,18 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-from-backplane-api
+  namespace: clusters-service
+spec:
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/backplane-api/sa/frontend
+    to:
+    - operation:
+        ports: ["8000"]
+    selector:
+    matchLabels:
+      app: "clusters-service"

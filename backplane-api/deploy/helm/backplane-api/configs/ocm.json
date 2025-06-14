@@ -1,0 +1,10 @@
+{
+  "access_token": "asdasdas",
+  "client_id": "ocm-cli",
+  "refresh_token": "asdasdas",
+  "scopes": [
+    "openid"
+  ],
+  "token_url": "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token",
+  "url": "http://localhost:8000"
+}

@@ -1,24 +1,79 @@
+
+
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: '{{ .Release.Name  }}'
+  name: {{ .Release.Name }}
 spec:
-  serviceName: '{{ .Release.Name  }}'
-  replicas: {{ .Values.statefulset.replicaCount }}
-  podManagementPolicy: '{{ .Values.statefulset.podManagementPolicy  }}'
-  revisionHistoryLimit: '{{ .Values.statefulset.revisionHistoryLimit  }}'
+  serviceName: {{ .Values.service.name | default .Release.Name }}
+  replicas: {{ .Values.statefulset.replicaCount | default 2 }}
+  podManagementPolicy: {{ .Values.statefulset.podManagementPolicy | default "Parallel" }}
+  revisionHistoryLimit: 10
   updateStrategy:
-    type: '{{ .Values.statefulset.updateStrategy  }}'
+    type: {{ .Values.statefulset.updateStrategy | default "RollingUpdate" }}
   selector:
     matchLabels:
-      app: '{{ .Release.Name  }}'
+      app: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app: backplane-api
-        azure.workload.identity/use: "true"
+        app: {{ .Release.Name }}
     spec:
-      serviceAccountName: '{{ .Values.serviceAccount.name  }}'
+      serviceAccountName: {{ .Values.serviceAccount.name | default "frontend"}}
       containers:
-      - name: backplane-api
-        image: "{{ .Values.statefulset.imageName }}"
+        - name: backplane-api
+          image: "{{ .Values.statefulset.imageName}}"
+          imagePullPolicy: Always
+          command:
+            - /usr/local/bin/backplane-api
+            - --enable-https=true
+            - --https-cert-file=/etc/tls/tls.crt # istio terminate tls
+            - --https-key-file=/etc/tls/tls.key
+            - --auditPath=/audit/backplane-audit.log 
+            - --jwks-file=/configs/jwks.json
+            - --jwks-url=https://developers.redhat.com/auth/realms/rhd/protocol/openid-connect/certs
+            - --ocm-config=/ocm/ocm.json
+            - --roles-file=/roles/roles.yml
+            - --cloud-config=/cloud/config/cloud-config.yml
+          ports:
+            - containerPort: {{ .Values.service.targetPort | default 8001 }}
+              name: https
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls
+              readOnly: true
+            - name: backplane-audit
+              mountPath: /audit
+            - name: authentication
+              mountPath: /configs
+            - name: roles
+              mountPath: /roles
+            - name: ocm
+              mountPath: /ocm
+            - name: cloud-config
+              mountPath: /cloud/config
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.service.tlsSecretName | default "backplane-api-tls" }}
+        - name: authentication
+          configMap:
+            name: authentication
+        - name: roles
+          configMap:
+            name: roles
+        - name: ocm
+          secret:
+            secretName: {{ .Values.secrets.authSecretName | default "ocm" }}
+        - name: cloud-config
+          configMap:
+            name: cloud-config
+  volumeClaimTemplates:
+    - metadata:
+        name: backplane-audit
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.statefulset.persistentVolume.storageClassName | default "default" }}
+        resources:
+          requests:
+            storage: {{ .Values.statefulset.persistentVolume.size | default "1Gi" }}

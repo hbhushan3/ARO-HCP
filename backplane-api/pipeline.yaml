@@ -22,7 +22,7 @@ resourceGroups:
       configRef: svc.rg
     - name: AKS_NAME
       configRef: svc.aks.name
-    - name: COMMIT
+    - name: DIGEST
       configRef: backplaneAPI.image.digest
     - name: SERVICE_KEY_VAULT
       configRef: serviceKeyVault.name
@@ -35,6 +35,6 @@ resourceGroups:
     - name: BACKPLANE_TLS_SECRET
       value: "backplane-api-tls"
     - name: CS_NAMESPACE
-      configRef: clustersService.k8s.namespace
+      configRef: clusterService.k8s.namespace
     - name: CS_SERVICE_ACCOUNT_NAME
-      configRef: clustersService.k8s.serviceAccountName
+      configRef: clusterService.k8s.serviceAccountName

@@ -13,7 +13,6 @@ statefulset:
   imageName: ""
   replicaCount: 2
   podManagementPolicy: "Parallel"
-  revisionHistoryLimit: 10
   updateStrategy: "RollingUpdate"
   persistentVolume:
     size: "1Gi"
@@ -24,12 +23,20 @@ service:
   port: 443
   targetPort: 8001
   tlsSecretName: backplane-api-tls
+dev:
+  generateSelfSignedTls: true
+secrets:
+  authSecretName: ocm
 serviceAccount:
-  name: "backplane-api"
+  name: "frontend"
+ocm:
+  containerImage: arohcpsvcdev.azurecr.io/ocm-container
+  containerImageTag: latest
+  apiUrl: https://api.stage.openshift.com
   workloadIdentityClientId: ""
   workloadIdentityTenantId: ""
 pullBinding:
-  registry: ""
-  scope: ""
+  registry: arohcpsvcdev.azurecr.io
+  scope: repository:app-sre/backplane-api:pull
   workloadIdentityClientId: ""
   workloadIdentityTenantId: ""

@@ -9,10 +9,11 @@ metadata:
     app.kubernetes.io/managed-by: '{{ .Release.Service  }}'
 spec:
   selector:
-    app.kubernetes.io/name: '{{ include "backplane-api.name" .  }}'
-    app.kubernetes.io/instance: '{{ .Release.Name  }}'
+    # app.kubernetes.io/name: '{{ include "backplane-api.name" .  }}'
+    # app.kubernetes.io/instance: '{{ .Release.Name  }}'
+    app: backplane-api
   ports:
-  - name: http
+  - name: https-backplane  #  Important: helps Istio detect HTTPS
+    port: 443              # Clients will connect to this (e.g. Gateway)
+    targetPort: 8001       # Your app listens on 8001
     protocol: TCP
-    port: 80
-    targetPort: 8080

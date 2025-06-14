@@ -1,0 +1,21 @@
+
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-backplane-frontend
+  namespace: maestro
+spec:
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/aro-hcp/sa/frontend
+    to:
+    - operation:
+        ports:
+        - "8000"
+        - "8090"
+  selector:
+    matchLabels:
+      app: maestro
