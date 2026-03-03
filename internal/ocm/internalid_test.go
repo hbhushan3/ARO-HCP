@@ -19,9 +19,12 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	arohcpv1alpha1 "github.com/openshift-online/ocm-sdk-go/arohcp/v1alpha1"
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
-	"github.com/stretchr/testify/assert"
+
+	"github.com/Azure/ARO-HCP/internal/api"
 )
 
 type FakeTransport struct{}
@@ -34,8 +37,9 @@ func TestInternalID(t *testing.T) {
 	tests := []struct {
 		name      string
 		path      string
-		id        string
 		kind      string
+		id        string
+		clusterID string
 		expectErr bool
 	}{
 		{
@@ -47,36 +51,56 @@ func TestInternalID(t *testing.T) {
 		{
 			name:      "parse v1 cluster",
 			path:      "/api/clusters_mgmt/v1/clusters/abc",
-			id:        "abc",
 			kind:      cmv1.ClusterKind,
+			id:        "abc",
+			clusterID: "abc",
 			expectErr: false,
 		},
 		{
 			name:      "parse aro_hcp v1alpha1 cluster",
 			path:      "/api/aro_hcp/v1alpha1/clusters/abc",
-			id:        "abc",
 			kind:      arohcpv1alpha1.ClusterKind,
+			id:        "abc",
+			clusterID: "abc",
 			expectErr: false,
 		},
 		{
 			name:      "parse v1 node pool",
 			path:      "/api/clusters_mgmt/v1/clusters/abc/node_pools/def",
-			id:        "def",
 			kind:      cmv1.NodePoolKind,
+			id:        "def",
+			clusterID: "abc",
 			expectErr: false,
 		},
 		{
 			name:      "parse aro_hcp v1alpha1 node pool",
 			path:      "/api/aro_hcp/v1alpha1/clusters/abc/node_pools/def",
-			id:        "def",
 			kind:      arohcpv1alpha1.NodePoolKind,
+			id:        "def",
+			clusterID: "abc",
+			expectErr: false,
+		},
+		{
+			name:      "parse v1 external auth",
+			path:      "/api/clusters_mgmt/v1/clusters/abc/external_auth_config/external_auths/def",
+			kind:      cmv1.ExternalAuthKind,
+			id:        "def",
+			clusterID: "abc",
+			expectErr: false,
+		},
+		{
+			name:      "parse aro_hcp v1alpha1 externalAuth",
+			path:      "/api/aro_hcp/v1alpha1/clusters/abc/external_auth_config/external_auths/def",
+			kind:      arohcpv1alpha1.ExternalAuthKind,
+			id:        "def",
+			clusterID: "abc",
 			expectErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			internalID, err := NewInternalID(tt.path)
+			internalID, err := api.NewInternalID(tt.path)
 			if tt.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -84,9 +108,9 @@ func TestInternalID(t *testing.T) {
 			}
 
 			transport := &FakeTransport{}
-			_, ok := internalID.GetClusterClient(transport)
+			_, ok := getClusterClient(internalID, transport)
 			assert.NotEqual(t, tt.expectErr, ok)
-			_, ok = internalID.GetAroHCPClusterClient(transport)
+			_, ok = getAroHCPClusterClient(internalID, transport)
 			assert.NotEqual(t, tt.expectErr, ok)
 
 			if tt.expectErr {
@@ -94,17 +118,25 @@ func TestInternalID(t *testing.T) {
 				return
 			}
 
+			kind := internalID.Kind()
+			assert.Equal(t, tt.kind, kind)
+
 			id := internalID.ID()
 			assert.Equal(t, tt.id, id)
 
-			kind := internalID.Kind()
-			assert.Equal(t, tt.kind, kind)
+			clusterID := internalID.ClusterID()
+			assert.Equal(t, tt.clusterID, clusterID)
 
 			str := internalID.String()
 			assert.Equal(t, tt.path, str)
 
 			if kind == arohcpv1alpha1.NodePoolKind {
-				_, ok := internalID.GetNodePoolClient(transport)
+				_, ok := GetNodePoolClient(internalID, transport)
+				assert.True(t, ok, "failed to get node pool client")
+			}
+
+			if kind == arohcpv1alpha1.ExternalAuthKind {
+				_, ok := GetExternalAuthClient(internalID, transport)
 				assert.True(t, ok, "failed to get node pool client")
 			}
 

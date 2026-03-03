@@ -17,8 +17,11 @@ package run
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Azure/ARO-Tools/pipelines/types"
 
 	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/pipeline/options"
 	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/pipeline"
@@ -86,8 +89,8 @@ func (o *RawRunOptions) Validate(ctx context.Context) (*ValidatedRunOptions, err
 	}, nil
 }
 
-func (o *ValidatedRunOptions) Complete() (*RunOptions, error) {
-	completed, err := o.ValidatedPipelineOptions.Complete()
+func (o *ValidatedRunOptions) Complete(ctx context.Context) (*RunOptions, error) {
+	completed, err := o.ValidatedPipelineOptions.Complete(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -103,15 +106,31 @@ func (o *ValidatedRunOptions) Complete() (*RunOptions, error) {
 }
 
 func (o *RunOptions) RunPipeline(ctx context.Context) error {
-	_, err := pipeline.RunPipeline(o.PipelineOptions.Pipeline, ctx, &pipeline.PipelineRunOptions{
-		DryRun:                   o.DryRun,
-		Configuration:            o.PipelineOptions.RolloutOptions.Config,
-		Region:                   o.PipelineOptions.RolloutOptions.Region,
-		Step:                     o.PipelineOptions.Step,
-		SubsciptionLookupFunc:    pipeline.LookupSubscriptionID,
-		NoPersist:                o.NoPersist,
-		DeploymentTimeoutSeconds: o.DeploymentTimeoutSeconds,
-		PipelineFilePath:         o.PipelineOptions.PipelineFilePath,
-	})
+	subscriptionIdToAzureConfigDirectory, err := pipeline.GetAllRequiredAzureClients(ctx, map[string]*types.Pipeline{"default": o.PipelineOptions.Pipeline}, o.PipelineOptions.RolloutOptions.Subscriptions)
+	if err != nil {
+		return fmt.Errorf("failed to get all required Azure clients: %w", err)
+	}
+	defer func() {
+		for _, azureConfigDir := range subscriptionIdToAzureConfigDirectory {
+			os.RemoveAll(azureConfigDir)
+		}
+	}()
+
+	_, err = pipeline.RunPipeline(o.PipelineOptions.Service, o.PipelineOptions.Pipeline, ctx, &pipeline.PipelineRunOptions{
+		BaseRunOptions: pipeline.BaseRunOptions{
+			DryRun:                               o.DryRun,
+			Cloud:                                o.PipelineOptions.RolloutOptions.Cloud,
+			Configuration:                        o.PipelineOptions.RolloutOptions.Config,
+			NoPersist:                            o.NoPersist,
+			DeploymentTimeoutSeconds:             o.DeploymentTimeoutSeconds,
+			BicepClient:                          o.PipelineOptions.RolloutOptions.BicepClient,
+			SubscriptionIdToAzureConfigDirectory: subscriptionIdToAzureConfigDirectory,
+		},
+		Region:                o.PipelineOptions.RolloutOptions.Region,
+		Step:                  o.PipelineOptions.Step,
+		SubsciptionLookupFunc: pipeline.LookupSubscriptionID(o.PipelineOptions.RolloutOptions.Subscriptions),
+		TopologyDir:           o.PipelineOptions.TopologyDir,
+		Concurrency:           o.PipelineOptions.RolloutOptions.Concurrency,
+	}, pipeline.RunStep)
 	return err
 }

@@ -17,35 +17,32 @@ package frontend
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/Azure/ARO-HCP/internal/api/arm"
 	"github.com/Azure/ARO-HCP/internal/database"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
-// MiddlewareLockSubscription this is best effort, not guaranteed correct.  This must not be relied upon for guaranteeing correctness.
-func MiddlewareLockSubscription(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	var lockClient database.LockClientInterface
+type middlewareLockSubscription struct {
+	dbClient database.DBClient
+}
 
-	ctx := r.Context()
-	logger := LoggerFromContext(ctx)
-
-	dbClient, err := DBClientFromContext(ctx)
-	if err != nil {
-		logger.Error(err.Error())
-		arm.WriteInternalServerError(w)
-		return
+func newMiddlewareLockSubscription(dbClient database.DBClient) *middlewareLockSubscription {
+	return &middlewareLockSubscription{
+		dbClient: dbClient,
 	}
+}
+
+// handleRequest this is best effort, not guaranteed correct.  This must not be relied upon for guaranteeing correctness.
+func (h *middlewareLockSubscription) handleRequest(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	ctx := r.Context()
+	logger := utils.LoggerFromContext(ctx)
 
 	subscriptionID := r.PathValue(PathSegmentSubscriptionID)
 
-	switch r.Method {
-	case http.MethodGet, http.MethodHead:
-		// These methods are read-only and don't require locking.
-	default:
-		lockClient = dbClient.GetLockClient()
-	}
+	// This may be nil when running "go test".
+	lockClient := h.dbClient.GetLockClient()
 
 	if lockClient == nil {
 		next(w, r)
@@ -54,21 +51,22 @@ func MiddlewareLockSubscription(w http.ResponseWriter, r *http.Request, next htt
 		timeout := lockClient.GetDefaultTimeToLive()
 		lock, err := lockClient.AcquireLock(ctx, subscriptionID, &timeout)
 		if err != nil {
-			message := fmt.Sprintf("Failed to acquire lock for subscription '%s': ", subscriptionID)
+			message := "Failed to acquire lock: "
 			if errors.Is(err, context.DeadlineExceeded) {
 				message += "timed out"
 				lockClient.SetRetryAfterHeader(w.Header())
 				arm.WriteError(
-					w, http.StatusConflict, arm.CloudErrorCodeConflict,
+					w, http.StatusServiceUnavailable,
+					arm.CloudErrorCodeLockContention,
 					"/subscriptions/"+subscriptionID, "%s", message)
 			} else {
 				message += err.Error()
 				arm.WriteInternalServerError(w)
 			}
-			logger.Error(message)
+			logger.Error(err, message)
 			return
 		}
-		logger.Info(fmt.Sprintf("Acquired lock for subscription '%s'", subscriptionID))
+		logger.Info("Acquired lock")
 
 		// Hold the lock until the remaining handlers complete.
 		// If we lose the lock the context will be cancelled.
@@ -77,13 +75,23 @@ func MiddlewareLockSubscription(w http.ResponseWriter, r *http.Request, next htt
 		defer func() {
 			lock = stop()
 			if lock != nil {
-				err = lockClient.ReleaseLock(ctx, lock)
+				// Release should work even if the work of the request is cancelled.  Prefer the standard context if it isn't
+				// cancelled. If it is cancelled, create a new context and attach a logger to it.
+				releaseContext := ctx
+				if ctx.Err() != nil {
+					var releaseCancel context.CancelFunc
+					releaseContext, releaseCancel = context.WithTimeout(context.Background(), lockClient.GetDefaultTimeToLive())
+					defer releaseCancel()
+					releaseContext = utils.ContextWithLogger(releaseContext, logger)
+				}
+
+				err = lockClient.ReleaseLock(releaseContext, lock)
 				if err == nil {
-					logger.Info(fmt.Sprintf("Released lock for subscription '%s'", subscriptionID))
+					logger.Info("Released lock")
 				} else {
 					// Failure here is non-fatal but still log the error.
 					// The lock's TTL ensures it will be released eventually.
-					logger.Error(fmt.Sprintf("Failed to release lock for subscription '%s': %v", subscriptionID, err))
+					logger.Error(err, "Failed to release lock")
 				}
 			}
 		}()

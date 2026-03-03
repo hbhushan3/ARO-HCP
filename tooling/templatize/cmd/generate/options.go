@@ -24,7 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
+	"github.com/Azure/ARO-Tools/config"
 
 	options "github.com/Azure/ARO-HCP/tooling/templatize/cmd"
 )
@@ -100,8 +100,8 @@ func (o *RawGenerationOptions) Validate(ctx context.Context) (*ValidatedGenerati
 	}, nil
 }
 
-func (o *ValidatedGenerationOptions) Complete() (*GenerationOptions, error) {
-	completed, err := o.ValidatedRolloutOptions.Complete()
+func (o *ValidatedGenerationOptions) Complete(ctx context.Context) (*GenerationOptions, error) {
+	completed, err := o.ValidatedRolloutOptions.Complete(ctx)
 	if err != nil {
 		return nil, err
 	}

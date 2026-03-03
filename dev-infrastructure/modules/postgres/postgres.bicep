@@ -48,7 +48,12 @@ type MaintenanceWindow = {
 param maintenanceWindow MaintenanceWindow
 
 @description('The number of days to retain backups for.')
-param backupRetentionDays int = 7
+@minValue(7)
+@maxValue(35)
+param backupRetentionDays int
+
+@description('Enable geo-redundant backups for the PostgreSQL server.')
+param geoRedundantBackup bool
 
 @allowed([
   32
@@ -64,9 +69,6 @@ param backupRetentionDays int = 7
   32768
 ])
 param storageSizeGB int
-
-@description('The log analytics workspace ID to link to the server.')
-param logAnalyticsWorkspaceId string = ''
 
 param version string
 
@@ -105,7 +107,7 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview'
     }
     backup: {
       backupRetentionDays: backupRetentionDays
-      geoRedundantBackup: 'Disabled'
+      geoRedundantBackup: geoRedundantBackup ? 'Enabled' : 'Disabled'
     }
     dataEncryption: {
       type: 'SystemManaged'
@@ -198,7 +200,7 @@ output port int = 5432
 //
 
 module servicePostgresPrivateEndpoint '../private-endpoint.bicep' = if (managedPrivateEndpoint) {
-  name: '${deployment().name}-svcs-kv-pe'
+  name: 'svcs-kv-pe-${uniqueString(deployment().name)}'
   scope: resourceGroup(managedPrivateEndpointResourceGroup)
   params: {
     location: location
@@ -211,28 +213,4 @@ module servicePostgresPrivateEndpoint '../private-endpoint.bicep' = if (managedP
   dependsOn: [
     postgres_database
   ]
-}
-
-//
-//   L O G   A N A L Y T I C S
-//
-
-resource aksDiagnosticSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (logAnalyticsWorkspaceId != '') {
-  scope: postgres
-  name: name
-  properties: {
-    metrics: [
-      {
-        category: 'AllMetrics'
-        enabled: true
-      }
-    ]
-    logs: [
-      {
-        categoryGroup: 'allLogs'
-        enabled: true
-      }
-    ]
-    workspaceId: logAnalyticsWorkspaceId
-  }
 }

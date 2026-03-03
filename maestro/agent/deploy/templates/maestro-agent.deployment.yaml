@@ -4,8 +4,9 @@ metadata:
   labels:
     app: maestro-agent
   name: maestro-agent
-  namespace: '{{ .Release.Namespace  }}'
+  namespace: '{{ .Release.Namespace }}'
 spec:
+  replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
       app: maestro-agent
@@ -14,9 +15,22 @@ spec:
       labels:
         app: maestro-agent
       annotations:
-        checksum/credsstore: '{{ include (print $.Template.BasePath "/maestro.secretproviderclass.yaml") . | sha256sum  }}'
-        checksum/config: '{{ include (print $.Template.BasePath "/maestro.secret.yaml") . | sha256sum  }}'
+        checksum/credsstore: '{{ include (print $.Template.BasePath "/maestro.secretproviderclass.yaml") . | sha256sum }}'
+        checksum/config: '{{ include (print $.Template.BasePath "/maestro.secret.yaml") . | sha256sum }}'
     spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: '{{ if eq (int .Values.deployment.zoneCount) 0 }}kubernetes.azure.com/agentpool{{ else }}topology.kubernetes.io/zone{{ end }}'
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: maestro-agent
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: maestro-agent
       initContainers:
       - name: init
         image: "{{ .Values.sideCar.image.registry }}/{{ .Values.sideCar.image.repository }}@{{ .Values.sideCar.image.digest }}"
@@ -55,6 +69,7 @@ spec:
         - --workload-source-driver=mqtt
         - --workload-source-config=/secrets/maestro/config.yaml
         - --cloudevents-client-id={{ .Values.consumerName }}-work-agent
+        - --disable-leader-election={{ if eq (int .Values.replicas) 1 }}true{{ else }}false{{ end }}
         - -v={{ .Values.glog_v }}
         image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}@{{ .Values.image.digest }}"
         imagePullPolicy: IfNotPresent
@@ -65,7 +80,21 @@ spec:
         - mountPath: /secrets/mqtt-creds
           name: mqtt-creds
           readOnly: true
-      serviceAccountName: maestro
+      serviceAccountName: '{{ .Values.serviceAccountName }}'
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: aro-hcp.azure.com/role
+                operator: In
+                values:
+                - infra
+      tolerations:
+      - effect: NoSchedule
+        key: infra
+        operator: "Equal"
+        value: "true"
       volumes:
       - name: nginx-config-tmp
         configMap:

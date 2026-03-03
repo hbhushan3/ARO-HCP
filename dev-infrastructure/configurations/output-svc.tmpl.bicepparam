@@ -1,3 +1,8 @@
 using '../templates/output-svc.bicep'
 
 param csMIName = '{{ .clustersService.managedIdentityName }}'
+param msiRefresherMIName = '{{ .msiCredentialsRefresher.managedIdentityName }}'
+param adminApiMIName = '{{ .adminApi.managedIdentityName }}'
+param backendMIName = '{{ .backend.managedIdentityName }}'
+param sessiongateMIName = '{{ .sessiongate.managedIdentityName }}'
+param exporterMIName = '{{ .customExporter.managedIdentityName }}'

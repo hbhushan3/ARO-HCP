@@ -30,7 +30,7 @@ There are two additional prefixes for special purposes
 
 ### Modules
 
-Single bicep templates can become too complex and hard to maintain big at times. To mitigate this, we group resouces by purpose and move them as dedicated bicep files into the `modules` directory.
+Single bicep templates can become too complex and hard to maintain big at times. To mitigate this, we group resources by purpose and move them as dedicated bicep files into the `modules` directory.
 
 Modules provide a structured way to organize and reuse infrastructure definitions. While modules enhance maintainability by breaking down complex deployments into manageable components, they also serve a critical function in switching execution context during a Bicep template deployment. See the section about [Cross-Subscription deployments](#cross-subscription-deployments) for more details.
 
@@ -58,36 +58,38 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.Region
 rolloutName: Region Rollout
 resourceGroups:
-- name: {{ .regionRG }}                                        (1)
-  subscription: {{ .svc.subscription }}                        (2)
+- name: regional                                               (1)
+  resourceGroup: {{ .regionRG }}                               (2)
+  subscription: {{ .svc.subscription.key }}                    (3)
   steps:
-  - name: region                                               (3)
-    action: ARM                                                (4)
-    template: templates/my-template.bicep                      (5)
-    parameters: configurations/my-template.tmpl.bicepparam     (6)
-    deploymentLevel: ResourceGroup/Subscription                (7)
-    variables:                                                 (8)
+  - name: region                                               (4)
+    action: ARM                                                (5)
+    template: templates/my-template.bicep                      (6)
+    parameters: configurations/my-template.tmpl.bicepparam     (7)
+    deploymentLevel: ResourceGroup/Subscription                (8)
+    variables:                                                 (9)
       ...
-    [outputOnly: true/false]                                   (9)
+    [outputOnly: true/false]                                   (10)
 ```
 
-1. The name of Azure resourcegroup targeted by this deployment
-2. The name of the Azue Subscription targeted by this deployment. When deploying via EV2, this needs to reference an [EV2 subscription key](https://ev2docs.azure.net/features/service-artifacts/actions/subscriptionProvisioningParameters.html#subscription-key)
-3. The name of the Azure deployment
-4. The action type `ARM` marks this step as ARM/Bicep deployment action
-5. File reference to the Bicep template, relative to the location of the pipeline file
-6. File reference to the Bicep parameter file, relative to the location of the pipeline file. This is a Go template file that will be processed to generate the final parameter file
-7. The deployment level for the Bicep template.
-8. covered in detail in the [Output templates and output chaining](#output-templates-and-output-chaining) section
-9. If `true`, a Bicep step is not allowed to declare any resources and can only provide output by inspecting `existing` resources. See details in the [output templates and output chaining](#output-templates-and-output-chaining) and [dry runs](#dry-runs) sections.
+1. The name of the group, within the pipeline
+2. The name of Azure resourcegroup targeted by this deployment
+3. The name of the Azue Subscription targeted by this deployment. When deploying via EV2, this needs to reference an [EV2 subscription key](https://ev2docs.azure.net/features/service-artifacts/actions/subscriptionProvisioningParameters.html#subscription-key)
+4. The name of the Azure deployment
+5. The action type `ARM` marks this step as ARM/Bicep deployment action
+6. File reference to the Bicep template, relative to the location of the pipeline file
+7. File reference to the Bicep parameter file, relative to the location of the pipeline file. This is a Go template file that will be processed to generate the final parameter file
+8. The deployment level for the Bicep template.
+9. covered in detail in the [Output templates and output chaining](#output-templates-and-output-chaining) section
+10. If `true`, a Bicep step is not allowed to declare any resources and can only provide output by inspecting `existing` resources. See details in the [output templates and output chaining](#output-templates-and-output-chaining) and [dry runs](#dry-runs) sections.
 
 ## Cross-Subscription deployments
 
-By default, a Bicep template deployment runs within a specified subscription and resource group. However, when a deployment needs to reach out to another resource group or subscription, modules are the mechanism to switch the deployment scope. Declaring a module and specifying its scope results in the creation of a separate Azure deployment within the targeted subscription and resource group. This approach is essential in various scenarios because the infrastructure for ARO HCP spreads accross various subscriptions and resourcegroups. You can find details about this in [SD-DDR-0051: ARO HCP Azure Deployment Layout](https://docs.google.com/document/d/1a5d-LPbgYMozLyRle7sJRI1h10zDurqFT_jnMGWwRwY/edit?tab=t.0#heading=h.hzsa87ps5uhr).
+By default, a Bicep template deployment runs within a specified subscription and resource group. However, when a deployment needs to reach out to another resource group or subscription, modules are the mechanism to switch the deployment scope. Declaring a module and specifying its scope results in the creation of a separate Azure deployment within the targeted subscription and resource group. This approach is essential in various scenarios because the infrastructure for ARO HCP spreads across various subscriptions and resourcegroups. You can find details about this in [SD-DDR-0051: ARO HCP Azure Deployment Layout](https://docs.google.com/document/d/1a5d-LPbgYMozLyRle7sJRI1h10zDurqFT_jnMGWwRwY/edit?tab=t.0#heading=h.hzsa87ps5uhr).
 
 For example, during the regional DNS zone setup, the deployment also needs to interact with the parent DNS zone located in another resource group—and depending on the environment, even in a different subscription—to set up the zone delegation properly.
 
-Here is the essence of the implementation the the DNS scenario. The [region.bicep](../dev-infrastructure/templates/region.bicep) template accepts the Azure resource ID of the parent zones as input parameter, uses the helper functions in [resource.bicep](../dev-infrastructure/modules/resource.bicep) to extract the subscription and resourcegroup bits from the ID and builds the proper scope from them to run the [zone-delegation.bicep](../dev-infrastructure/modules/dns/zone-delegation.bicep) module within the other scope.
+Here is the essence of the implementation the DNS scenario. The [region.bicep](../dev-infrastructure/templates/region.bicep) template accepts the Azure resource ID of the parent zones as input parameter, uses the helper functions in [resource.bicep](../dev-infrastructure/modules/resource.bicep) to extract the subscription and resourcegroup bits from the ID and builds the proper scope from them to run the [zone-delegation.bicep](../dev-infrastructure/modules/dns/zone-delegation.bicep) module within the other scope.
 
 ```bicep
 // region.bicep
@@ -123,16 +125,18 @@ With this in place we can hook up both bicep templates in a pipeline file.
 ```yaml
 ...
 resourceGroups:
-- name: {{ .global.rg }}                                         (3)
-  subscription: {{ .global.subscription }}
+- name: global
+  resourceGroup: {{ .global.rg }}                                (3)
+  subscription: {{ .global.subscription.key }}
   steps:
-  - name: global-output
+  - name: output
     action: ARM
     template: templates/output-global.bicep
     parameters: configurations/output-global.tmpl.bicepparam
     outputOnly: true                                             (4)
-- name: {{ .regionRG }}                                          (5)
-  subscription: {{ .svc.subscription }}
+- name: regional
+  resourceGroup: {{ .regionRG }}                                 (5)
+  subscription: {{ .svc.subscription.key }}
   steps:
   - name: region
     action: ARM
@@ -142,7 +146,8 @@ resourceGroups:
       ...
       - name: svcParentZoneResourceId                            (6)
         input:                                                   (7)
-          step: global-output
+          resourceGroup: global
+          step: output
           name: svcParentZoneResourceId
 ```
 
@@ -157,7 +162,7 @@ resourceGroups:
 > [!NOTE]
 > Why can't we pass in subscription and resourcegroup information to bicepparam files similar to how we do it in steps (3) and (4) as they are apparently part of our [configuration](configuration.md)?
 >
-> This might work in simple environments, where all subscriptions are known upfront, e.g. in [config.yaml](../config/config.yaml) `global.subscription` is a concrete value pointing to our RH DEV subscription. For more complex scenarios in MSFTs environments (see [sdp-pipelines/hcp/config.clouds-overlay.yaml](https://dev.azure.com/msazure/AzureRedHatOpenShift/_git/sdp-pipelines?path=/hcp/config.clouds-overlay.yaml)), such subscription configuration does not hold actual subscription names or IDs, but symbolic subscription references that make sense for MSFTs deployment orchestration solution EV2. The real subscription IDs are only known during deployment time, when a Bicep template runs within an actual subscription.
+> This might work in simple environments, where all subscriptions are known upfront, e.g. in [config.yaml](../config/config.yaml) .global.subscription.key` is a concrete value pointing to our RH DEV subscription. For more complex scenarios in MSFTs environments (see [sdp-pipelines/hcp/config.clouds-overlay.yaml](https://dev.azure.com/msazure/AzureRedHatOpenShift/_git/sdp-pipelines?path=/hcp/config.clouds-overlay.yaml)), such subscription configuration does not hold actual subscription names or IDs, but symbolic subscription references that make sense for MSFTs deployment orchestration solution EV2. The real subscription IDs are only known during deployment time, when a Bicep template runs within an actual subscription.
 
 ## Dry-runs
 

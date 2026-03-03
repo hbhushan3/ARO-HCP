@@ -57,7 +57,7 @@ kube-prometheus-stack:
   kubeApiServer:
     enabled: false
   kubeStateMetrics:
-    enabled: false
+    enabled: true # OSS prometheus scrapes kube-state-metrics so the HCP ksm are routed to the hcp Azure Monitor Workspace
   prometheusOperator:
     enabled: true
     ## Use '{{ template "kube-prometheus-stack.fullname" . }}-operator' by default
@@ -102,6 +102,13 @@ kube-prometheus-stack:
       operator: "Equal"
       value: "true"
       effect: "NoSchedule"
+    ## Admission webhooks configuration
+    ## Image configuration is provided by environment-specific values files
+    ## (values-mgmt.yaml and values-svc.yaml) to ensure ACR cached images are used
+    ##
+    admissionWebhooks:
+      patch:
+        enabled: true
   ## Deploy a Prometheus instance
   ##
   prometheus:

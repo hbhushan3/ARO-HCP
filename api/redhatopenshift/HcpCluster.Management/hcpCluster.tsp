@@ -5,9 +5,6 @@ import "@azure-tools/typespec-azure-resource-manager";
 
 import "./hcpCluster-models.tsp";
 
-using TypeSpec.Rest;
-using TypeSpec.Http;
-using Azure.Core;
 using Azure.ResourceManager;
 
 namespace Microsoft.RedHatOpenShift;
@@ -46,4 +43,14 @@ interface NodePools {
   update is ArmResourcePatchAsync<NodePool, NodePoolProperties>;
   delete is ArmResourceDeleteWithoutOkAsync<NodePool>;
   listByParent is ArmResourceListByParent<NodePool>;
+}
+
+/** HCP cluster external auth config */
+@armResourceOperations(ExternalAuth)
+interface ExternalAuths {
+  get is ArmResourceRead<ExternalAuth>;
+  createOrUpdate is ArmResourceCreateOrReplaceAsync<ExternalAuth>;
+  update is ArmResourcePatchAsync<ExternalAuth, ExternalAuthProperties>;
+  delete is ArmResourceDeleteWithoutOkAsync<ExternalAuth>;
+  listByParent is ArmResourceListByParent<ExternalAuth>;
 }

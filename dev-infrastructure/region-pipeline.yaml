@@ -11,104 +11,194 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.Region
 rolloutName: Region Rollout
 resourceGroups:
-- name: '{{ .global.rg  }}'
-  subscription: '{{ .global.subscription  }}'
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
   # Query parameters from global deployment, e.g. DNS hzone and ACR resource IDs
-  - name: global-output
+  - name: output
     action: ARM
     template: templates/output-global.bicep
     parameters: configurations/output-global.tmpl.bicepparam
     deploymentLevel: ResourceGroup
     outputOnly: true
-- name: '{{ .regionRG  }}'
-  subscription: '{{ .svc.subscription  }}'
+  - name: ocp-acr-replication
+    action: Shell
+    command: ./manage-acr-replication.sh
+    workingDir: ./scripts
+    dryRun:
+      variables:
+      - name: DRY_RUN
+        value: "true"
+    variables:
+    - name: ACR_NAME
+      configRef: acr.ocp.name
+    - name: REPLICATION_REGION
+      configRef: region
+    shellIdentity:
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+  - name: svc-acr-replication
+    action: Shell
+    command: ./manage-acr-replication.sh
+    workingDir: ./scripts
+    variables:
+    - name: ACR_NAME
+      configRef: acr.svc.name
+    - name: REPLICATION_REGION
+      configRef: region
+    dryRun:
+      variables:
+      - name: DRY_RUN
+        value: "true"
+    shellIdentity:
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+  - name: add-svc-grafana-datasource
+    action: Shell
+    omitFromServiceGroupCompletion: true
+    command: ./add-grafana-datasource.sh
+    workingDir: ./scripts
+    automatedRetry:
+      errorContainsAny:
+      - "is invalid as it is being provisioned with state"
+      - "503 Server Error: Service Unavailable for url"
+      - "(CreateOrUpdateConflict) Operation conflict occurred for workspace"
+      - "InvalidMonitorAccountIntegration"
+      maximumRetryCount: 5
+      durationBetweenRetries: 2m
+    variables:
+    - name: GRAFANA_RESOURCE_ID
+      input:
+        resourceGroup: global
+        step: output
+        name: grafanaResourceId
+    - name: PROM_QUERY_URL
+      input:
+        resourceGroup: regional
+        step: output
+        name: monitorPrometheusQueryEndpoint
+    - name: MONITOR_ID
+      input:
+        resourceGroup: regional
+        step: output
+        name: azureMonitoringWorkspaceId
+    shellIdentity:
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+  - name: add-hcp-grafana-datasource
+    action: Shell
+    omitFromServiceGroupCompletion: true
+    command: ./add-grafana-datasource.sh
+    workingDir: ./scripts
+    automatedRetry:
+      errorContainsAny:
+      - "is invalid as it is being provisioned with state"
+      - "503 Server Error: Service Unavailable for url"
+      - "(CreateOrUpdateConflict) Operation conflict occurred for workspace"
+      - "InvalidMonitorAccountIntegration"
+      maximumRetryCount: 5
+      durationBetweenRetries: 2m
+    variables:
+    - name: GRAFANA_RESOURCE_ID
+      input:
+        resourceGroup: global
+        step: output
+        name: grafanaResourceId
+    - name: PROM_QUERY_URL
+      input:
+        resourceGroup: regional
+        step: output
+        name: hcpMonitorPrometheusQueryEndpoint
+    - name: MONITOR_ID
+      input:
+        resourceGroup: regional
+        step: output
+        name: hcpAzureMonitoringWorkspaceId
+    dependsOn:
+    - resourceGroup: global
+      step: add-svc-grafana-datasource
+    shellIdentity:
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+- name: regional
+  resourceGroup: '{{ .regionRG }}'
+  subscription: '{{ .svc.subscription.key }}'
   steps:
   - name: rpRegistration
-    action: ResourceProviderRegistration
-    resourceProviderNamespaces:
-      value:
-      - Microsoft.Dashboard
-  - name: region
+    action: ProviderFeatureRegistration
+    providerConfigRef: svc.subscription.providers
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    dependsOn:
+    - resourceGroup: global
+      step: svc-acr-replication
+    - resourceGroup: global
+      step: ocp-acr-replication
+  - name: infra
     action: ARM
     template: templates/region.bicep
     parameters: configurations/region.tmpl.bicepparam
     deploymentLevel: ResourceGroup
     variables:
-    - name: ocpAcrResourceId
+    - name: globalMSIId
       input:
-        step: global-output
-        name: ocpAcrResourceId
-    - name: svcAcrResourceId
-      input:
-        step: global-output
-        name: svcAcrResourceId
+        resourceGroup: global
+        step: output
+        name: globalMSIId
     - name: cxParentZoneResourceId
       input:
-        step: global-output
+        resourceGroup: global
+        step: output
         name: cxParentZoneResourceId
     - name: svcParentZoneResourceId
       input:
-        step: global-output
+        resourceGroup: global
+        step: output
         name: svcParentZoneResourceId
     - name: grafanaResourceId
       input:
-        step: global-output
+        resourceGroup: global
+        step: output
         name: grafanaResourceId
     dependsOn:
-    - global-output
-    - rpRegistration
-  - name: region-output
+    - resourceGroup: regional
+      step: rpRegistration
+  - name: housekeeping
+    action: Shell
+    command: ./regional-housekeeping.sh
+    workingDir: ./scripts
+    dryRun:
+      variables:
+      - name: DRY_RUN
+        value: "true"
+    variables:
+    - name: REGIONAL_RESOURCE_GROUP
+      configRef: regionRG
+    dependsOn:
+    - resourceGroup: regional
+      step: infra
+    shellIdentity:
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+  - name: output
     action: ARM
     template: templates/output-region.bicep
     parameters: configurations/output-region.tmpl.bicepparam
     deploymentLevel: ResourceGroup
     outputOnly: true
     dependsOn:
-    - region
-- name: '{{ .global.rg  }}'
-  subscription: '{{ .global.subscription  }}'
-  steps:
-  - name: add-svc-grafana-datasource
-    action: Shell
-    command: scripts/add-grafana-datasource.sh
-    variables:
-    - name: GRAFANA_RESOURCE_ID
-      input:
-        step: global-output
-        name: grafanaResourceId
-    - name: PROM_QUERY_URL
-      input:
-        step: region-output
-        name: monitorPrometheusQueryEndpoint
-    - name: MONITOR_ID
-      input:
-        step: region-output
-        name: azureMonitoringWorkspaceId
-    dependsOn:
-    - region-output
-    shellIdentity:
-      configRef: aroDevopsMsiId
-- name: '{{ .global.rg  }}'
-  subscription: '{{ .global.subscription  }}'
-  steps:
-  - name: add-hcp-grafana-datasource
-    action: Shell
-    command: scripts/add-grafana-datasource.sh
-    variables:
-    - name: GRAFANA_RESOURCE_ID
-      input:
-        step: global-output
-        name: grafanaResourceId
-    - name: PROM_QUERY_URL
-      input:
-        step: region-output
-        name: hcpMonitorPrometheusQueryEndpoint
-    - name: MONITOR_ID
-      input:
-        step: region-output
-        name: hcpAzureMonitoringWorkspaceId
-    dependsOn:
-    - add-svc-grafana-datasource
-    shellIdentity:
-      configRef: aroDevopsMsiId
+    - resourceGroup: regional
+      step: housekeeping

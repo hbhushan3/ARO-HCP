@@ -1,39 +1,33 @@
 # ARO-HCP-FRONTEND
 
-## Build frontend binary for local testing
-```
-make frontend
-```
+## Development Workflow
 
-## Build the frontend container
-```bash
-# Note: for testing changes, please use your own registry
-# versus pushing images to the DEV ACR
-export ARO_HCP_IMAGE_REGISTRY="quay.io/QUAY_USERNAME"
-make image
+The Frontend can be built and tested locally and in personal DEV environments using a set of Makefile targets.
 
-# Push the image to a container registry
-make push
+- **make run:** runs the Frontend binary locally
+- **make deploy:** builds the Frontend container image, uploads it to the DEV service ACR and deploys it to a personal DEV cluster
 
-# all in one option
-export ARO_HCP_IMAGE_REGISTRY="quay.io/QUAY_USERNAME"
-make build-push
-```
+The `Makefile` has access to a set of environment variables representing configuration from the `config/config.yaml` file. The environment variables are made available via the `include ../setup-templatize-env.mk` directive in the `Makefile`, which processes and includes the [Env.mk](Env.mk) file. This is the file you need to modify to provide additional environment variables fueled by `config.yaml`.
 
-## Run the frontend container
+### Local Run
 
-**Locally**:
-```bash
-docker run -p 8443:8443 aro-hcp-frontend
-```
+Using the `make run` target, the Frontend binary can be run locally.
 
-**In Cluster:**
-```bash
-make deploy
-make undeploy
-```
+### Personal DEV Environment deployment
 
-> To create a cluster, follow the instructions in [development-setup.md](../dev-infrastructure/docs/development-setup.md)
+The local code can also be deployed directly into a personal DEV environment by running `make deploy`. Understand that this requires such an environment to be created first via `make personal-dev-env` from the root of the repository.
+
+`make deploy` builds a custom developer image from the local code and uploads it to the DEV service ACR (`arohcpsvcdev`) into a developer specific repository. This way developer images will not conflict with other develooper images or CI built ones. The actual deployment is delegated to the pipeline/AdminAPI target in the root of the repository, providing a configuration override for `frontend.image.repository` and `frontend.image.digest` respectively.
+
+## Deployment
+
+The [pipeline.yaml](pipeline.yaml) file in this directory contains the pipeline definition for the Frontend. It is integrated into the [topology.yaml](../topology.yaml) file and runs as part of the service cluster deployment.
+
+## Admin Credential Revocation
+
+Admin credential revocation is currently gated via the `Microsoft.RedHatOpenShift/ExperimentalReleaseFeatures` AFEC flag.
+
+See [ARO-23882](https://issues.redhat.com/browse/ARO-23882) for the tracking ticket. This gate will be removed once admin credential revocation is generally available.
 
 ## Available endpoints
 
@@ -58,7 +52,13 @@ curl -X GET "localhost:8443/providers/Microsoft.RedHatOpenShift/operations?api-v
 List HcpOpenShiftVersions Resources by Location
 
 ```bash
-curl -X GET "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/locations/YOUR_LOCATION/providers/Microsoft.RedHatOpenShift/hcpOpenShiftVersions?api-version=2024-06-10-preview"
+curl -X GET "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.RedHatOpenShift/locations/westus3/hcpOpenShiftVersions?api-version=2024-06-10-preview"
+```
+
+Get HcpOpenshiftVersion Resource
+
+```bash
+curl -X GET "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.RedHatOpenShift/locations/westus3/hcpOpenShiftVersions/4.19.7?api-version=2024-06-10-preview"
 ```
 
 List HcpOpenShiftClusterResource Resources by Subscription ID
@@ -109,4 +109,22 @@ curl "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/resource
 Delete node pool
 ```bash
 curl -X DELETE "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/dev-test-cluster/nodePools/dev-nodepool?api-version=2024-06-10-preview"
+```
+
+External Auth operations:
+
+Create external auth
+```bash
+curl -X PUT "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/dev-test-cluster/externalAuths/entra?api-version=2024-06-10-preview" \
+  -H "X-Ms-Arm-Resource-System-Data: {\"createdBy\": \"aro-hcp-local-testing\", \"createdByType\": \"User\", \"createdAt\": \"2024-06-06T19:26:56+00:00\"}" --json @external_auth.json
+```
+
+Get external auth
+```bash
+curl "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/dev-test-cluster/externalAuths/entra?api-version=2024-06-10-preview"
+```
+
+Delete external auth
+```bash
+curl -X DELETE "localhost:8443/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/dev-test-cluster/externalAuths/entra?api-version=2024-06-10-preview"
 ```

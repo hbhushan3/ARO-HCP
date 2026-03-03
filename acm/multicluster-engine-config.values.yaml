@@ -1,0 +1,17 @@
+global:
+  registryOverride: "{{ .acr.svc.name }}.azurecr.io/acm-d-cache"
+finalizeMceJobImage: "{{ .aksCommandRuntime.image.registry }}/{{ .aksCommandRuntime.image.repository }}@{{ .aksCommandRuntime.image.digest }}"
+localCluster:
+  kubeApiUrl: https://kubernetes.default.svc
+  addonConfig:
+    applicationManagerEnabled: false
+    certPolicyControllerEnabled: false
+    policyControllerEnabled: true
+    searchCollectorEnabled: false
+policy:
+  grc:
+    hubconfig:
+      replicaCount: 2
+  cluster-lifecycle:
+    hubconfig:
+      replicaCount: 2

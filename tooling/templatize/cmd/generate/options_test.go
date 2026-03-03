@@ -15,18 +15,22 @@
 package generate
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/Azure/ARO-Tools/testutil"
+
 	options "github.com/Azure/ARO-HCP/tooling/templatize/cmd"
-	"github.com/Azure/ARO-HCP/tooling/templatize/internal/testutil"
 )
 
 func TestRawOptions(t *testing.T) {
+	ctx := logr.NewContext(t.Context(), testr.New(t))
+
 	tmpdir := t.TempDir()
 	opts := &RawGenerationOptions{
 		RolloutOptions: &options.RawRolloutOptions{
@@ -42,6 +46,6 @@ func TestRawOptions(t *testing.T) {
 		Input:  "../../testdata/pipeline.yaml",
 		Output: fmt.Sprintf("%s/pipeline.yaml", tmpdir),
 	}
-	assert.NoError(t, generate(context.Background(), opts))
+	assert.NoError(t, generate(ctx, opts))
 	testutil.CompareFileWithFixture(t, filepath.Join(tmpdir, "pipeline.yaml"))
 }

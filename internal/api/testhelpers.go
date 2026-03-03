@@ -18,16 +18,18 @@ import (
 	"io"
 	"log/slog"
 	"path"
-	"reflect"
-	"strings"
 	"testing"
+	"time"
 
 	"dario.cat/mergo"
-	validator "github.com/go-playground/validator/v10"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"k8s.io/utils/ptr"
+
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+
 	"github.com/Azure/ARO-HCP/internal/api/arm"
+	"github.com/Azure/ARO-HCP/internal/api/v20240610preview/generated"
 )
 
 // The definitions in this file are meant for unit tests.
@@ -41,66 +43,43 @@ const (
 	TestResourceGroupName        = "testResourceGroup"
 	TestClusterName              = "testCluster"
 	TestNodePoolName             = "testNodePool"
+	TestExternalAuthName         = "testExternalAuth"
 	TestDeploymentName           = "testDeployment"
+	TestManagedResourceGroupName = "testManagedResourceGroup"
 	TestNetworkSecurityGroupName = "testNetworkSecurityGroup"
 	TestVirtualNetworkName       = "testVirtualNetwork"
 	TestSubnetName               = "testSubnet"
 )
 
 var (
-	TestSubscriptionResourceID         = path.Join("/subscriptions", TestSubscriptionID)
-	TestResourceGroupResourceID        = path.Join(TestSubscriptionResourceID, "resourceGroups", TestResourceGroupName)
-	TestClusterResourceID              = path.Join(TestResourceGroupResourceID, "providers", ProviderNamespace, ClusterResourceTypeName, TestClusterName)
-	TestNodePoolResourceID             = path.Join(TestClusterResourceID, NodePoolResourceTypeName, TestNodePoolName)
-	TestDeploymentResourceID           = path.Join(TestResourceGroupResourceID, "providers", ProviderNamespace, "deployments", TestDeploymentName)
-	TestNetworkSecurityGroupResourceID = path.Join(TestResourceGroupResourceID, "providers", "Microsoft.Network", "networkSecurityGroups", TestNetworkSecurityGroupName)
-	TestVirtualNetworkResourceID       = path.Join(TestResourceGroupResourceID, "providers", "Microsoft.Network", "virtualNetworks", TestVirtualNetworkName)
-	TestSubnetResourceID               = path.Join(TestVirtualNetworkResourceID, "subnets", TestSubnetName)
+	TestSubscriptionResourceID                = path.Join("/subscriptions", TestSubscriptionID)
+	TestResourceGroupResourceID               = path.Join(TestSubscriptionResourceID, "resourceGroups", TestResourceGroupName)
+	TestClusterResourceID                     = path.Join(TestResourceGroupResourceID, "providers", ProviderNamespace, ClusterResourceTypeName, TestClusterName)
+	TestNodePoolResourceID                    = path.Join(TestClusterResourceID, NodePoolResourceTypeName, TestNodePoolName)
+	TestExternalAuthResourceID                = path.Join(TestClusterResourceID, ExternalAuthResourceTypeName, TestExternalAuthName)
+	TestDeploymentResourceID                  = path.Join(TestResourceGroupResourceID, "providers", ProviderNamespace, "deployments", TestDeploymentName)
+	TestNetworkSecurityGroupResourceID        = path.Join(TestResourceGroupResourceID, "providers", "Microsoft.Network", "networkSecurityGroups", TestNetworkSecurityGroupName)
+	TestVirtualNetworkResourceID              = path.Join(TestResourceGroupResourceID, "providers", "Microsoft.Network", "virtualNetworks", TestVirtualNetworkName)
+	TestSubnetResourceID                      = path.Join(TestVirtualNetworkResourceID, "subnets", TestSubnetName)
+	TestManagedIdentitiesDataPlaneIdentityURL = "https://dummyhost.identity.azure.net/otherinformation?aqueryarg=somevalue"
 )
 
 func NewTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func NewTestValidator() *validator.Validate {
-	validate := NewValidator()
-
-	validate.RegisterAlias("enum_diskstorageaccounttype", EnumValidateTag(
-		DiskStorageAccountTypePremium_LRS,
-		DiskStorageAccountTypeStandardSSD_LRS,
-		DiskStorageAccountTypeStandard_LRS))
-	validate.RegisterAlias("enum_effect", EnumValidateTag(
-		EffectNoExecute,
-		EffectNoSchedule,
-		EffectPreferNoSchedule))
-	validate.RegisterAlias("enum_networktype", EnumValidateTag(
-		NetworkTypeOVNKubernetes,
-		NetworkTypeOther))
-	validate.RegisterAlias("enum_outboundtype", EnumValidateTag(
-		OutboundTypeLoadBalancer))
-	validate.RegisterAlias("enum_visibility", EnumValidateTag(
-		VisibilityPublic,
-		VisibilityPrivate))
-	validate.RegisterAlias("enum_managedserviceidentitytype", EnumValidateTag(
-		arm.ManagedServiceIdentityTypeNone,
-		arm.ManagedServiceIdentityTypeSystemAssigned,
-		arm.ManagedServiceIdentityTypeSystemAssignedUserAssigned,
-		arm.ManagedServiceIdentityTypeUserAssigned))
-	validate.RegisterAlias("enum_optionalclustercapability", EnumValidateTag(
-		OptionalClusterCapabilityImageRegistry))
-
-	return validate
-}
-
-func NewTestUserAssignedIdentity(name string) string {
-	return path.Join(TestResourceGroupResourceID, "providers", "Microsoft.ManagedIdentity", "userAssignedIdentities", name)
+func NewTestUserAssignedIdentity(name string) *azcorearm.ResourceID {
+	return Must(azcorearm.ParseResourceID(path.Join(TestResourceGroupResourceID, "providers", "Microsoft.ManagedIdentity", "userAssignedIdentities", name)))
 }
 
 func MinimumValidClusterTestCase() *HCPOpenShiftCluster {
-	resource := NewDefaultHCPOpenShiftCluster()
-	resource.Location = TestLocation
-	resource.Properties.Platform.SubnetID = TestSubnetResourceID
-	resource.Properties.Platform.NetworkSecurityGroupID = TestNetworkSecurityGroupResourceID
+	resource := NewDefaultHCPOpenShiftCluster(Must(azcorearm.ParseResourceID(TestClusterResourceID)), TestLocation)
+	resource.CustomerProperties.Version.ID = "4.15"
+	resource.CustomerProperties.DNS.BaseDomainPrefix = "testcluster"
+	resource.CustomerProperties.Platform.ManagedResourceGroup = TestManagedResourceGroupName
+	resource.CustomerProperties.Platform.SubnetID = Must(azcorearm.ParseResourceID(TestSubnetResourceID))
+	resource.CustomerProperties.Platform.NetworkSecurityGroupID = Must(azcorearm.ParseResourceID(TestNetworkSecurityGroupResourceID))
+	resource.ServiceProviderProperties.ManagedIdentitiesDataPlaneIdentityURL = TestManagedIdentitiesDataPlaneIdentityURL
 	return resource
 }
 
@@ -110,53 +89,87 @@ func ClusterTestCase(t *testing.T, tweaks *HCPOpenShiftCluster) *HCPOpenShiftClu
 	return resource
 }
 
-func MinimumValidNodePoolTestCase() *HCPOpenShiftClusterNodePool {
-	resource := NewDefaultHCPOpenShiftClusterNodePool()
-	resource.Location = TestLocation
-	resource.Properties.Platform.VMSize = "Standard_D8s_v3"
+func MinimumValidExternalAuthTestCase() *HCPOpenShiftClusterExternalAuth {
+	resource := NewDefaultHCPOpenShiftClusterExternalAuth(Must(azcorearm.ParseResourceID(TestExternalAuthResourceID)))
+	resource.Properties.Issuer.URL = "https://www.redhat.com"
+	resource.Properties.Issuer.Audiences = []string{"audience1"}
+	resource.Properties.Claim.Mappings.Username.Claim = "my-cool-claim"
 	return resource
 }
 
-func NodePoolTestCase(t *testing.T, tweaks *HCPOpenShiftClusterNodePool) *HCPOpenShiftClusterNodePool {
-	nodePool := MinimumValidNodePoolTestCase()
-	require.NoError(t, mergo.Merge(nodePool, tweaks, mergo.WithOverride))
-	return nodePool
+func ExternalAuthTestCase(t *testing.T, tweaks *HCPOpenShiftClusterExternalAuth) *HCPOpenShiftClusterExternalAuth {
+	externalAuth := MinimumValidExternalAuthTestCase()
+	require.NoError(t, mergo.Merge(externalAuth, tweaks, mergo.WithOverride))
+	return externalAuth
 }
 
-// AssertJSONPath ensures path is valid for struct type T by following
-// its "json" struct tags. This is intended for validation errors where
-// the Target field must be hard-coded to a JSON path.
-func AssertJSONPath[T any](t *testing.T, path string) bool {
-	t.Helper()
+// +k8s:deepcopy-gen=false
+type ExternalTestResource struct {
+	ID         *string
+	Name       *string
+	Type       *string
+	SystemData *generated.SystemData
+	Location   *string
+	Tags       map[string]*string
+	Identity   *generated.ManagedServiceIdentity
+}
 
-	structType := reflect.TypeFor[T]()
-	pathSegments := strings.Split(path, ".")
+type InternalTestResource struct {
+	arm.TrackedResource
+	Identity *arm.ManagedServiceIdentity `json:"identity"`
+}
 
-	for depth, jsonTagName := range pathSegments {
-		currentPath := strings.Join(pathSegments[:depth+1], ".")
-		require.Equalf(t, reflect.Struct.String(), structType.Kind().String(), "Unexpected type at '%s'", currentPath)
+var _ VersionedCreatableResource[InternalTestResource] = &ExternalTestResource{}
 
-		// Discard any subscript in the path segment.
-		index := strings.Index(jsonTagName, "[")
-		if index >= 0 {
-			jsonTagName = jsonTagName[:index]
-		}
+func (m *ExternalTestResource) NewExternal() any {
+	//TODO implement me
+	panic("implement me")
+}
 
-		field, ok := structType.FieldByNameFunc(func(name string) bool {
-			field, ok := structType.FieldByName(name)
-			return ok && GetJSONTagName(field.Tag) == jsonTagName
-		})
-		if !assert.Truef(t, ok, "Invalid JSON path '%s'", currentPath) {
-			return false
-		}
+func (m *ExternalTestResource) SetDefaultValues(a any) error {
+	//TODO implement me
+	panic("implement me")
+}
 
-		switch field.Type.Kind() {
-		case reflect.Map, reflect.Pointer, reflect.Slice:
-			structType = field.Type.Elem()
-		default:
-			structType = field.Type
+func (m *ExternalTestResource) GetVersion() Version {
+	// FIXME Implement if there's a need for it in tests.
+	return nil
+}
+
+func (m *ExternalTestResource) ConvertToInternal() (*InternalTestResource, error) {
+	// FIXME Implement if there's a need for it in tests.
+	return nil, nil
+}
+
+// Must is a helper function that takes a value and error, returns the value if no error occurred,
+// or panics if an error occurred. This is useful for test setup where we don't expect errors.
+func Must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// CreateTestSubscription creates a test subscription with optional registered feature flags.
+// Call with no arguments for a standard subscription, or pass feature names to register them.
+func CreateTestSubscription(registeredFeatures ...string) *arm.Subscription {
+	features := make([]arm.Feature, len(registeredFeatures))
+	for i, feature := range registeredFeatures {
+		features[i] = arm.Feature{
+			Name:  ptr.To(feature),
+			State: ptr.To("Registered"),
 		}
 	}
 
-	return true
+	return &arm.Subscription{
+		CosmosMetadata: CosmosMetadata{
+			ResourceID: Must(azcorearm.ParseResourceID(TestSubscriptionResourceID)),
+		},
+		ResourceID:       Must(azcorearm.ParseResourceID(TestSubscriptionResourceID)),
+		State:            arm.SubscriptionStateRegistered,
+		RegistrationDate: ptr.To(time.Now().Format(time.RFC1123)),
+		Properties: &arm.SubscriptionProperties{
+			RegisteredFeatures: &features,
+		},
+	}
 }

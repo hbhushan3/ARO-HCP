@@ -1,68 +1,75 @@
--include ../setup-env.mk
--include ../helm-cmd.mk
+BACKEND_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-CURRENT_COMMIT ?= $(shell COMMIT_SHA=$$(git rev-parse --short=7 HEAD); if [ -z "$$(git status --porcelain 2>/dev/null)" ]; then echo "$$COMMIT_SHA"; else echo "$$COMMIT_SHA"-dirty; fi )
+-include ../setup-templatize-env.mk
+-include ../.bingo/Variables.mk
+
+ARO_HCP_REVISION ?= $(shell git rev-parse HEAD)
 ARO_HCP_IMAGE_REGISTRY ?= ${ARO_HCP_IMAGE_ACR}.azurecr.io
-ARO_HCP_BACKEND_IMAGE ?= $(ARO_HCP_IMAGE_REGISTRY)/$(ARO_HCP_IMAGE_REPOSITORY)
+BACKEND_IMAGE_TAG ?= $(shell DETECT_DIRTY_GIT_WORKTREE=${DETECT_DIRTY_GIT_WORKTREE} DEPLOY_ENV=${DEPLOY_ENV} ../generate-tag.sh)
+BACKEND_GENERATED_IMAGE_REPOSITORY = $(shell DEPLOY_ENV=${DEPLOY_ENV} BASELINE_REPO=${BACKEND_IMAGE_REPOSITORY} ../generate-repo.sh)
+BACKEND_TAGGED_IMAGE ?= $(ARO_HCP_IMAGE_REGISTRY)/$(BACKEND_GENERATED_IMAGE_REPOSITORY):$(BACKEND_IMAGE_TAG)
 
-.DEFAULT_GOAL := backend
+# Binary name
+BINARY = aro-hcp-backend
 
-backend:
-	go build -ldflags="-X github.com/Azure/ARO-HCP/internal/version.CommitSHA=${CURRENT_COMMIT}" -o aro-hcp-backend .
-.PHONY: backend
+# Build flags
+BUILD_DATE ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS = -ldflags "\
+	-X github.com/Azure/ARO-HCP/internal/version.CommitSHA=${ARO_HCP_REVISION}"
 
-run:
-	DB_URL=$$(az cosmosdb show -n ${DB_NAME} -g ${REGION_RG} --query documentEndpoint -o tsv) && \
-	./aro-hcp-backend --location ${LOCATION} \
+# Source files
+BACKEND_SOURCES = $(shell find . -name '*.go' -o -name 'go.mod' -o -name 'go.sum')
+
+# Default target
+.DEFAULT_GOAL := build
+
+# Build the binary
+build: $(BINARY)
+.PHONY: build
+
+$(BINARY): $(BACKEND_SOURCES)
+	go build $(LDFLAGS) -o $(BINARY) .
+
+run: $(BINARY)
+	./$(BINARY) --location ${LOCATION} \
 		--clusters-service-url http://localhost:8000 \
 		--cosmos-name ${DB_NAME} \
-		--cosmos-url $${DB_URL}
+		--cosmos-url ${DB_URL} \
+		--namespace ${RP_NAMESPACE}
 .PHONY: run
 
 clean:
-	rm -f aro-hcp-backend
+	rm -f ${BINARY}
 .PHONY: clean
 
-image:
-	@bash -c "set -e; pushd .. > /dev/null; \
-	          trap 'rm --force image-environment && popd > /dev/null' EXIT; \
-	          cp ${ENV_VARS_FILE} image-environment; \
-	          docker build . --file backend/Dockerfile \
-	                         --build-arg CURRENT_COMMIT=${CURRENT_COMMIT} \
-	                         --build-arg PLATFORM=linux/amd64 \
-	                         --tag ${ARO_HCP_BACKEND_IMAGE}:${CURRENT_COMMIT}"
-.PHONY: image
+image: Dockerfile $(BACKEND_SOURCES) Makefile
+	cd $(BACKEND_DIR)/.. && \
+	docker build . --file backend/Dockerfile \
+		--build-arg PLATFORM=linux/amd64 \
+		--build-arg ARO_HCP_REVISION=${ARO_HCP_REVISION} \
+		--build-arg ARO_HCP_IMAGE_TAG=${BACKEND_IMAGE_TAG} \
+		--tag ${BACKEND_TAGGED_IMAGE}
 
-push: image
+build-and-push: image $(ORAS)
 	az acr login --name ${ARO_HCP_IMAGE_ACR}
-	docker push ${ARO_HCP_BACKEND_IMAGE}:${CURRENT_COMMIT}
-.PHONY: push
+	docker push ${BACKEND_TAGGED_IMAGE}
+.PHONY: build-and-push
 
-deploy:
-	DIGEST=$$(../get-digest.sh ${ARO_HCP_IMAGE_ACR} arohcpbackend) \
-	BACKEND_MI_CLIENT_ID=$$(az identity show \
-			-g ${RESOURCEGROUP} \
-			-n backend \
-			--query clientId -o tsv) && \
-	DB_URL=$$(az cosmosdb show -n ${DB_NAME} -g ${REGION_RG} --query documentEndpoint -o tsv) && \
-	kubectl create namespace aro-hcp --dry-run=client -o json | kubectl apply -f - && \
-	kubectl label namespace aro-hcp "istio.io/rev=${ISTO_TAG}" --overwrite=true && \
-	${HELM_CMD} aro-hcp-backend-dev \
-		deploy/ \
-		--set configMap.databaseName=${DB_NAME} \
-		--set configMap.databaseUrl="$${DB_URL}" \
-		--set configMap.backendMiClientId="$${BACKEND_MI_CLIENT_ID}" \
-		--set serviceAccount.workloadIdentityClientId="$${BACKEND_MI_CLIENT_ID}" \
-		--set configMap.currentVersion=${ARO_HCP_BACKEND_IMAGE}@$${DIGEST} \
-		--set configMap.location=${LOCATION} \
-		--set clustersService.namespace=${CS_NAMESPACE} \
-		--set clustersService.serviceAccount=${CS_SERVICE_ACCOUNT_NAME} \
-		--set deployment.imageName=${ARO_HCP_BACKEND_IMAGE}@$${DIGEST} \
-		--set tracing.address=${TRACING_ADDRESS} \
-		--set tracing.exporter=${TRACING_EXPORTER} \
-		--namespace aro-hcp
+OVERRIDE_CONFIG_FILE ?= /tmp/backend-override-config-$(date +%s).yaml
+
+record-override: $(YQ) $(ORAS)
+	@az acr login --name ${ARO_HCP_IMAGE_ACR} --expose-token --output tsv --query accessToken | \
+		$(ORAS) login ${ARO_HCP_IMAGE_REGISTRY} \
+			--username 00000000-0000-0000-0000-000000000000 \
+			--password-stdin
+
+	@DIGEST=$$($(ORAS) manifest fetch --descriptor ${BACKEND_TAGGED_IMAGE} | $(YQ) .digest); \
+	$(YQ) eval -n "\
+		.clouds.dev.environments.$(DEPLOY_ENV).defaults.backend.image.repository = \"$(BACKEND_GENERATED_IMAGE_REPOSITORY)\" | \
+		.clouds.dev.environments.$(DEPLOY_ENV).defaults.backend.image.digest = \"$$DIGEST\" \
+	" > $(OVERRIDE_CONFIG_FILE)
+.PHONY: record-override
+
+deploy: build-and-push record-override
+	make -C .. pipeline/RP.Backend OVERRIDE_CONFIG_FILE=$(OVERRIDE_CONFIG_FILE)
 .PHONY: deploy
-
-undeploy:
-	helm uninstall aro-hcp-backend-dev --namespace aro-hcp
-.PHONY: undeploy

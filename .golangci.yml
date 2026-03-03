@@ -23,16 +23,35 @@ linters:
     importas:
       no-unaliased: true
       alias:
+      - pkg: github.com/openshift-online/ocm-sdk-go/aro_hcp/v1alpha1
+        alias: arohcpv1alpha1
       - pkg: github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1
         alias: cmv1
       - pkg: github.com/Azure/azure-sdk-for-go/sdk/azcore/arm
         alias: azcorearm
       - pkg: github.com/openshift/api/(\w+)/(v[\w\d]+)
         alias: $1$2
+      - pkg: github.com/Azure/ARO-HCP/test/sdk/v20240610preview/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
+        alias: hcpsdk20240610preview
+    staticcheck:
+      dot-import-whitelist:
+      - "github.com/onsi/ginkgo"
+      - "github.com/onsi/ginkgo/v2"
+      - "github.com/onsi/gomega"
 formatters:
   enable:
-  - goimports
+  - gci
+  - gofmt
   settings:
-    goimports:
-      local-prefixes:
-      - github.com/Azure/ARO-HCP
+    gci:
+      custom-order: true
+      sections:
+      - standard
+      - blank
+      - dot
+      - default
+      - prefix(k8s.io)
+      - prefix(sigs.k8s.io)
+      - prefix(github.com/Azure)
+      - prefix(github.com/openshift)
+      - prefix(github.com/Azure/ARO-HCP)

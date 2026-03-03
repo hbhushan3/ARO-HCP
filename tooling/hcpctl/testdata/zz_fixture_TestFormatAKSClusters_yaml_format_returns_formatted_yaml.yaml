@@ -1,0 +1,11 @@
+items:
+- location: eastus
+  name: test-cluster
+  resourcegroup: test-rg
+  resourceid: /subscriptions/sub-123/resourceGroups/test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster
+  state: ""
+  subscription: ""
+  subscriptionid: sub-123
+  tags: null
+kind: ManagementClusters
+total: 1

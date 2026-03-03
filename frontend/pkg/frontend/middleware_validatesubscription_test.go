@@ -17,17 +17,20 @@ package frontend
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+
 	"github.com/Azure/ARO-HCP/internal/api/arm"
-	"github.com/Azure/ARO-HCP/internal/mocks"
+	"github.com/Azure/ARO-HCP/internal/database"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 func TestMiddlewareValidateSubscription(t *testing.T) {
@@ -41,6 +44,7 @@ func TestMiddlewareValidateSubscription(t *testing.T) {
 		expectedState arm.SubscriptionState
 		httpMethod    string
 		requestPath   string
+		cosmosdbError error
 		expectedError *arm.CloudError
 	}{
 		{
@@ -174,12 +178,29 @@ func TestMiddlewareValidateSubscription(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:        "cosmosdb error returns internal server error",
+			httpMethod:  http.MethodGet,
+			requestPath: defaultRequestPath,
+			cosmosdbError: &azcore.ResponseError{
+				StatusCode: http.StatusInternalServerError,
+				ErrorCode:  "CosmosDB is down",
+			},
+			expectedError: &arm.CloudError{
+				StatusCode: http.StatusInternalServerError,
+				CloudErrorBody: &arm.CloudErrorBody{
+					Code:    arm.CloudErrorCodeInternalServerError,
+					Message: "Internal server error.",
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
-			mockDBClient := mocks.NewMockDBClient(ctrl)
+			mockDBClient := database.NewMockDBClient(ctrl)
+			mockSubscriptionCRUD := database.NewMockSubscriptionCRUD(ctrl)
 
 			var subscription *arm.Subscription
 
@@ -199,8 +220,7 @@ func TestMiddlewareValidateSubscription(t *testing.T) {
 
 			// Add a logger to the context so parsing errors will be logged.
 			ctx := request.Context()
-			ctx = ContextWithLogger(ctx, slog.Default())
-			ctx = ContextWithDBClient(ctx, mockDBClient)
+			ctx = utils.ContextWithLogger(ctx, testr.New(t))
 			ctx, sr := initSpanRecorder(ctx)
 			request = request.WithContext(ctx)
 
@@ -211,11 +231,21 @@ func TestMiddlewareValidateSubscription(t *testing.T) {
 			if tt.requestPath == defaultRequestPath {
 				request.SetPathValue(PathSegmentSubscriptionID, subscriptionId)
 				mockDBClient.EXPECT().
-					GetSubscriptionDoc(gomock.Any(), subscriptionId).
-					Return(getMockDBDoc(subscription)) // defined in frontend_test.go
+					Subscriptions().
+					Return(mockSubscriptionCRUD)
+
+				if tt.cosmosdbError != nil {
+					mockSubscriptionCRUD.EXPECT().
+						Get(gomock.Any(), subscriptionId).
+						Return(nil, tt.cosmosdbError)
+				} else {
+					mockSubscriptionCRUD.EXPECT().
+						Get(gomock.Any(), subscriptionId).
+						Return(getMockDBDoc(subscription)) // defined in frontend_test.go
+				}
 			}
 
-			MiddlewareValidateSubscriptionState(writer, request, next)
+			newMiddlewareValidateSubscriptionState(mockDBClient).handleRequest(writer, request, next)
 
 			res := writer.Result()
 			if tt.expectedError != nil {
@@ -241,19 +271,32 @@ func TestMiddlewareValidateSubscription(t *testing.T) {
 
 	t.Run("nil DB client in the context", func(t *testing.T) {
 		writer := httptest.NewRecorder()
+		writer.Code = 0 // set the zero value so we can distinguish between a written result and default
 
 		request, err := http.NewRequest(http.MethodGet, defaultRequestPath, nil)
 		assert.NoError(t, err)
 		request.SetPathValue(PathSegmentSubscriptionID, subscriptionId)
 
 		ctx := request.Context()
-		ctx = ContextWithLogger(ctx, slog.Default())
+		ctx = utils.ContextWithLogger(ctx, testr.New(t))
 		request = request.WithContext(ctx)
 
-		next := func(w http.ResponseWriter, r *http.Request) {}
-		MiddlewareValidateSubscriptionState(writer, request, next)
+		next := func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("should not reach this call")
+		}
 
-		res := writer.Result()
-		assert.Equal(t, http.StatusInternalServerError, res.StatusCode)
+		// this is a coding error (client cannot trigger this) from which the request cannot recover.  A panic appropriate.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Println("Recovery as expected", r)
+				}
+			}()
+
+			newMiddlewareValidateSubscriptionState(nil).handleRequest(writer, request, next)
+		}()
+
+		// 0 indicates that no result was written by this handler.  In a real chain, our panic handler writes the result
+		assert.Equal(t, 0, writer.Code)
 	})
 }

@@ -22,9 +22,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/Azure/ARO-HCP/internal/api/arm"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 func TestMiddlewareCorrelation(t *testing.T) {
@@ -132,10 +134,10 @@ func TestMiddlewareCorrelation(t *testing.T) {
 				writer = httptest.NewRecorder()
 				req    = &tt.r
 				buf    bytes.Buffer
-				logger = slog.New(slog.NewTextHandler(&buf, nil))
+				logger = logr.FromSlogHandler(slog.NewTextHandler(&buf, nil))
 				data   *arm.CorrelationData
 			)
-			req = req.WithContext(ContextWithLogger(req.Context(), logger))
+			req = req.WithContext(utils.ContextWithLogger(req.Context(), logger))
 
 			next := func(w http.ResponseWriter, r *http.Request) {
 				var err error
@@ -144,7 +146,7 @@ func TestMiddlewareCorrelation(t *testing.T) {
 					t.Logf("err: %s", err)
 				}
 
-				logger := LoggerFromContext(r.Context())
+				logger := utils.LoggerFromContext(r.Context())
 				// Emit a log message to check that it includes the correlation attributes.
 				logger.Info("test")
 				w.WriteHeader(http.StatusOK)

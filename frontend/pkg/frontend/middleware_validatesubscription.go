@@ -15,13 +15,14 @@
 package frontend
 
 import (
-	"fmt"
 	"net/http"
 
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Azure/ARO-HCP/internal/api/arm"
+	"github.com/Azure/ARO-HCP/internal/database"
 	"github.com/Azure/ARO-HCP/internal/tracing"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 const (
@@ -30,18 +31,21 @@ const (
 	SubscriptionMissingMessage           = "The request is missing required parameter '%s'."
 )
 
-// MiddlewareValidateSubscriptionState validates the state of the subscription as outlined by
-// https://github.com/cloud-and-ai-microsoft/resource-provider-contract/blob/master/v1.0/subscription-lifecycle-api-reference.md
-func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
-	ctx := r.Context()
-	logger := LoggerFromContext(ctx)
+type middlewareValidateSubscriptionState struct {
+	dbClient database.DBClient
+}
 
-	dbClient, err := DBClientFromContext(ctx)
-	if err != nil {
-		logger.Error(err.Error())
-		arm.WriteInternalServerError(w)
-		return
+func newMiddlewareValidateSubscriptionState(dbClient database.DBClient) *middlewareValidateSubscriptionState {
+	return &middlewareValidateSubscriptionState{
+		dbClient: dbClient,
 	}
+}
+
+// handleRequest validates the state of the subscription as outlined by
+// https://github.com/cloud-and-ai-microsoft/resource-provider-contract/blob/master/v1.0/subscription-lifecycle-api-reference.md
+func (h *middlewareValidateSubscriptionState) handleRequest(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	ctx := r.Context()
+	logger := utils.LoggerFromContext(ctx)
 
 	subscriptionId := r.PathValue(PathSegmentSubscriptionID)
 	if subscriptionId == "" {
@@ -55,13 +59,20 @@ func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request,
 
 	// TODO: Ideally, we don't want to have to hit the database in this middleware
 	// Currently, we are using the database to retrieve the subscription's tenantID and state
-	subscription, err := dbClient.GetSubscriptionDoc(ctx, subscriptionId)
+	subscription, err := h.dbClient.Subscriptions().Get(ctx, subscriptionId)
 	if err != nil {
-		arm.WriteError(
-			w, http.StatusBadRequest,
-			arm.CloudErrorCodeInvalidSubscriptionState, "",
-			UnregisteredSubscriptionStateMessage,
-			subscriptionId)
+		logger.Error(err, "failed to get subscription document", "subscriptionId", subscriptionId)
+
+		// subscription not found, treat as unregistered
+		if database.IsResponseError(err, http.StatusNotFound) {
+			arm.WriteError(
+				w, http.StatusBadRequest,
+				arm.CloudErrorCodeInvalidSubscriptionState, "",
+				UnregisteredSubscriptionStateMessage,
+				subscriptionId)
+			return
+		}
+		arm.WriteInternalServerError(w)
 		return
 	}
 
@@ -70,7 +81,8 @@ func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request,
 	// header may not be present, in which case we can try to fudge it
 	// from the SubscriptionDocument.
 	if r.Header.Get(arm.HeaderNameHomeTenantID) == "" {
-		if subscription.Properties != nil &&
+		if subscription != nil &&
+			subscription.Properties != nil &&
 			subscription.Properties.TenantId != nil {
 			r.Header.Set(
 				arm.HeaderNameHomeTenantID,
@@ -87,6 +99,7 @@ func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request,
 	case arm.SubscriptionStateRegistered:
 		next(w, r)
 	case arm.SubscriptionStateUnregistered:
+		logger.Error(nil, "subscription document indicates unregistered", "subscriptionId", subscriptionId)
 		arm.WriteError(
 			w, http.StatusBadRequest,
 			arm.CloudErrorCodeInvalidSubscriptionState, "",
@@ -94,6 +107,7 @@ func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request,
 			subscriptionId)
 	case arm.SubscriptionStateWarned, arm.SubscriptionStateSuspended:
 		if r.Method != http.MethodGet && r.Method != http.MethodDelete {
+			logger.Error(nil, "subscription document indicates restricted state", "subscriptionId", subscriptionId, "state", subscription.State)
 			arm.WriteError(w, http.StatusConflict,
 				arm.CloudErrorCodeInvalidSubscriptionState, "",
 				InvalidSubscriptionStateMessage,
@@ -102,13 +116,14 @@ func MiddlewareValidateSubscriptionState(w http.ResponseWriter, r *http.Request,
 		}
 		next(w, r)
 	case arm.SubscriptionStateDeleted:
+		logger.Error(nil, "subscription document indicates deleted", "subscriptionId", subscriptionId)
 		arm.WriteError(
 			w, http.StatusBadRequest,
 			arm.CloudErrorCodeInvalidSubscriptionState, "",
 			InvalidSubscriptionStateMessage,
 			subscription.State)
 	default:
-		logger.Error(fmt.Sprintf("unsupported subscription state %q", subscription.State))
+		logger.Error(nil, "unsupported subscription state", "subscriptionState", subscription.State)
 		arm.WriteInternalServerError(w)
 	}
 }

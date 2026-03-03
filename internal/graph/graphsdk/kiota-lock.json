@@ -1,0 +1,34 @@
+{
+  "descriptionHash": "DAC2FA87E0BD82AA2F0BDC3D7EACC6E2A50E16C33B5C67050C1CB898DBB7A8806C7221FF815AF7042586D869CB8C14A6ED3E07FB6F1D13FE2CEB1C70ADFD3B93",
+  "descriptionLocation": "../../../tooling/kiota/openapi.yaml",
+  "lockFileVersion": "1.0.0",
+  "kiotaVersion": "1.28.0",
+  "clientClassName": "GraphBaseServiceClient",
+  "typeAccessModifier": "Public",
+  "clientNamespaceName": "github.com/Azure/ARO-HCP/internal/graph/graphsdk",
+  "language": "Go",
+  "usesBackingStore": true,
+  "excludeBackwardCompatible": false,
+  "includeAdditionalData": false,
+  "disableSSLValidation": false,
+  "serializers": [
+    "Microsoft.Kiota.Serialization.Json.JsonSerializationWriterFactory",
+    "Microsoft.Kiota.Serialization.Text.TextSerializationWriterFactory",
+    "Microsoft.Kiota.Serialization.Form.FormSerializationWriterFactory",
+    "Microsoft.Kiota.Serialization.Multipart.MultipartSerializationWriterFactory"
+  ],
+  "deserializers": [
+    "Microsoft.Kiota.Serialization.Json.JsonParseNodeFactory",
+    "Microsoft.Kiota.Serialization.Text.TextParseNodeFactory",
+    "Microsoft.Kiota.Serialization.Form.FormParseNodeFactory"
+  ],
+  "structuredMimeTypes": [
+    "application/json",
+    "text/plain;q=0.9",
+    "application/x-www-form-urlencoded;q=0.2",
+    "multipart/form-data;q=0.1"
+  ],
+  "includePatterns": [],
+  "excludePatterns": [],
+  "disabledValidationRules": []
+}

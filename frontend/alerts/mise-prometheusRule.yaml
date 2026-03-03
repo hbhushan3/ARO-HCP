@@ -1,0 +1,28 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-prometheus
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+    role: alert-rules
+  name: mise-monitoring-rules
+  namespace: monitoring
+spec:
+  groups:
+  - name: mise
+    rules:
+    - alert: MiseEnvoyScrapeDown
+      # Get list of all `svc` clusters (returns 1 for each)
+      # Remove clusters that have the istio-proxy metric UP
+      expr: |
+        group by (cluster) (up{job="kube-state-metrics", cluster=~".*-svc(-[0-9]+)?$"})
+        unless on(cluster)
+        group by (cluster) (up{endpoint="http-envoy-prom", container="istio-proxy", namespace="mise"} == 1)
+      for: 5m
+      labels:
+        severity: info
+      annotations:
+        summary: "Envoy scrape target down for namespace=mise"
+        description: "Prometheus scrape for envoy-stats job in namespace mise is failing or missing."
+        runbook_url: 'TBD'

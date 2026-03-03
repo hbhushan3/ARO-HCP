@@ -20,13 +20,15 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/graph"
+	"github.com/Azure/ARO-Tools/pipelines/types"
 )
 
 func TestCreateCommand(t *testing.T) {
@@ -38,7 +40,7 @@ func TestCreateCommand(t *testing.T) {
 		envVars        map[string]string
 		expectedScript string
 		expectedEnv    string
-		configuration  config.Configuration
+		configuration  configtypes.Configuration
 		skipCommand    bool
 	}{
 		{
@@ -97,7 +99,7 @@ func TestCreateCommand(t *testing.T) {
 			dryRun:         true,
 			expectedScript: buildBashScript("/bin/echo"),
 			envVars:        map[string]string{},
-			configuration:  config.Configuration{"test": "foobar"},
+			configuration:  configtypes.Configuration{"test": "foobar"},
 			expectedEnv:    "DRY_RUN=foobar",
 		},
 		{
@@ -115,7 +117,7 @@ func TestCreateCommand(t *testing.T) {
 			if tc.dryRun {
 				dryRun = &tc.step.DryRun
 			}
-			dryRunVars, err := mapStepVariables(tc.step.DryRun.Variables, tc.configuration, map[string]Output{})
+			dryRunVars, err := mapStepVariables("Microsoft.Azure.ARO.Whatever", tc.step.DryRun.Variables, tc.configuration, Outputs{})
 			assert.NoError(t, err)
 			maps.Copy(tc.envVars, dryRunVars)
 
@@ -135,15 +137,15 @@ func TestCreateCommand(t *testing.T) {
 func TestMapStepVariables(t *testing.T) {
 	testCases := []struct {
 		name     string
-		cfg      config.Configuration
-		input    map[string]Output
+		cfg      configtypes.Configuration
+		input    Outputs
 		step     *types.ShellStep
 		expected map[string]string
 		err      string
 	}{
 		{
 			name: "basic",
-			cfg: config.Configuration{
+			cfg: configtypes.Configuration{
 				"FOO": "bar",
 			},
 			step: &types.ShellStep{
@@ -162,7 +164,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "missing",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Variables: []types.Variable{
 					{
@@ -176,7 +178,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "type conversion",
-			cfg: config.Configuration{
+			cfg: configtypes.Configuration{
 				"FOO": 42,
 			},
 			step: &types.ShellStep{
@@ -195,7 +197,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "value",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Variables: []types.Variable{
 					{
@@ -212,7 +214,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "output chaining",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Variables: []types.Variable{
 					{
@@ -220,17 +222,24 @@ func TestMapStepVariables(t *testing.T) {
 						Value: types.Value{
 							Input: &types.Input{
 								Name: "output1",
-								Step: "step1",
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "step1",
+								},
 							},
 						},
 					},
 				},
 			},
-			input: map[string]Output{
-				"step1": ArmOutput{
-					"output1": map[string]any{
-						"type":  "String",
-						"value": "bar",
+			input: Outputs{
+				"Microsoft.Azure.ARO.Whatever": map[string]map[string]Output{
+					"rg": {
+						"step1": ArmOutput{
+							"output1": map[string]any{
+								"type":  "String",
+								"value": "bar",
+							},
+						},
 					},
 				},
 			},
@@ -240,7 +249,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "output chaining step missing",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Variables: []types.Variable{
 					{
@@ -248,7 +257,10 @@ func TestMapStepVariables(t *testing.T) {
 						Value: types.Value{
 							Input: &types.Input{
 								Name: "output1",
-								Step: "step1",
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "step1",
+								},
 							},
 						},
 					},
@@ -258,7 +270,7 @@ func TestMapStepVariables(t *testing.T) {
 		},
 		{
 			name: "output chaining output missing",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Variables: []types.Variable{
 					{
@@ -266,17 +278,24 @@ func TestMapStepVariables(t *testing.T) {
 						Value: types.Value{
 							Input: &types.Input{
 								Name: "output1",
-								Step: "step1",
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "step1",
+								},
 							},
 						},
 					},
 				},
 			},
-			input: map[string]Output{
-				"step1": ArmOutput{
-					"anotheroutput": map[string]any{
-						"type":  "String",
-						"value": "bar",
+			input: Outputs{
+				"Microsoft.Azure.ARO.Whatever": map[string]map[string]Output{
+					"rg": {
+						"step1": ArmOutput{
+							"anotheroutput": map[string]any{
+								"type":  "String",
+								"value": "bar",
+							},
+						},
 					},
 				},
 			},
@@ -285,7 +304,7 @@ func TestMapStepVariables(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			envVars, err := mapStepVariables(tc.step.Variables, tc.cfg, tc.input)
+			envVars, err := mapStepVariables("Microsoft.Azure.ARO.Whatever", tc.step.Variables, tc.cfg, tc.input)
 			t.Log(envVars)
 			if tc.err != "" {
 				assert.Error(t, err, tc.err)
@@ -301,20 +320,20 @@ func TestRunShellStep(t *testing.T) {
 	var buf bytes.Buffer
 	testCases := []struct {
 		name string
-		cfg  config.Configuration
+		cfg  configtypes.Configuration
 		step *types.ShellStep
 		err  string
 	}{
 		{
 			name: "basic",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Command: "echo hello",
 			},
 		},
 		{
 			name: "test nounset",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Command: "echo $DOES_NOT_EXIST",
 			},
@@ -322,7 +341,7 @@ func TestRunShellStep(t *testing.T) {
 		},
 		{
 			name: "test errexit",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Command: "false ; echo hello",
 			},
@@ -330,7 +349,7 @@ func TestRunShellStep(t *testing.T) {
 		},
 		{
 			name: "test pipefail",
-			cfg:  config.Configuration{},
+			cfg:  configtypes.Configuration{},
 			step: &types.ShellStep{
 				Command: "false | echo",
 			},
@@ -339,7 +358,16 @@ func TestRunShellStep(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := runShellStep(tc.step, context.Background(), "", &PipelineRunOptions{}, map[string]Output{}, &buf)
+			err := runShellStep(graph.Identifier{
+				ServiceGroup: "Microsoft.Azure.ARO.Whatever",
+				StepDependency: types.StepDependency{
+					ResourceGroup: "group",
+					Step:          "step",
+				},
+			}, tc.step, context.Background(), "", "", &StepRunOptions{}, &ExecutionState{
+				RWMutex: &sync.RWMutex{},
+				Outputs: Outputs{},
+			}, &buf)
 			if tc.err != "" {
 				assert.ErrorContains(t, err, tc.err)
 			} else {
@@ -355,7 +383,16 @@ func TestRunShellStepCaptureOutput(t *testing.T) {
 	}
 	var buf bytes.Buffer
 
-	err := runShellStep(step, context.Background(), "", &PipelineRunOptions{}, map[string]Output{}, &buf)
+	err := runShellStep(graph.Identifier{
+		ServiceGroup: "Microsoft.Azure.ARO.Whatever",
+		StepDependency: types.StepDependency{
+			ResourceGroup: "group",
+			Step:          "step",
+		},
+	}, step, context.Background(), "", "", &StepRunOptions{}, &ExecutionState{
+		RWMutex: &sync.RWMutex{},
+		Outputs: Outputs{},
+	}, &buf)
 	assert.NoError(t, err)
 	assert.Equal(t, buf.String(), "hallo\n")
 }

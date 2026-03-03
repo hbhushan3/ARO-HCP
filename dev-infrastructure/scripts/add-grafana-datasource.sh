@@ -3,6 +3,28 @@
 set -o errexit
 set -o nounset
 set -o pipefail
+set -x
+retry_command() {
+    local retries=5
+    local count=0
+    until "$@"; do
+        exit_code=$?
+        count=$((count + 1))
+        if [ $count -lt $retries ]; then
+            echo "Command failed (Attempt $count/$retries). Retrying in 10s..."
+            sleep 10
+        else
+            echo "Command failed after $retries attempts."
+            return $exit_code
+        fi
+    done
+}
+
+if [[ ${MONITOR_ID} =~ .*prow.* ]];
+then
+    echo "Skipping prow instance ${MONITOR_ID}"
+    exit 0
+fi
 
 # parse resource IDs
 IFS='/'
@@ -15,30 +37,30 @@ MONITOR_NAME=${ADDR[8]}
 IFS=' '
 
 # lookup existing azure monitoring workspace registration
-MONITORS=$(az grafana show --ids "${GRAFANA_RESOURCE_ID}" -o json | jq .properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations)
+MONITORS=$(az resource show --ids "${GRAFANA_RESOURCE_ID}" --api-version 2024-10-01 -o json | jq .properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations)
 MONITOR_DATA_SOURCE="Managed_Prometheus_${MONITOR_NAME}"
 EXISTING_DATA_SOURCE_URL=$(az grafana data-source list --name ${GRAFANA_NAME} \
     --resource-group ${GRAFANA_RG} --subscription ${GRAFANA_SUBSCRIPTION_ID} \
     --query "[?contains(name, '${MONITOR_DATA_SOURCE}')].url | [0]" -o tsv)
 
 # wait for inflight updates to finish
-az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}"
+az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}" --api-version 2024-10-01
 
 # In dev resource groups are purged which causes data sources to become out of sync in the Azure Grafana Instance.
 # If prometheus urls don't match then delete the integration to cleanup the data source.
 if [[ -n "${EXISTING_DATA_SOURCE_URL}" && ${EXISTING_DATA_SOURCE_URL} != ${PROM_QUERY_URL} ]];
 then
     echo "Removing ${MONITOR_NAME} integration from ${GRAFANA_NAME}"
-    MONITOR_UPDATES=$(echo "${MONITORS}" | jq --arg id "${MONITOR_ID}" 'map(select(.azureMonitorWorkspaceResourceId != $id))')
-    az resource update --ids ${GRAFANA_RESOURCE_ID} --set properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations="${MONITOR_UPDATES}"
-    az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}"
+    MONITOR_UPDATES=$(echo "${MONITORS}" | jq --arg id "${MONITOR_ID}" 'map(select((.azureMonitorWorkspaceResourceId | ascii_downcase) != ($id | ascii_downcase)))')
+    retry_command az resource update --ids ${GRAFANA_RESOURCE_ID} --set properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations="${MONITOR_UPDATES}" --api-version 2024-10-01
+    az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}" --api-version 2024-10-01
 fi
 
 # add the azure monitor workspace to grafana if it is not already integrated
-IS_INTEGRATED=$(echo "$MONITORS" | jq --arg id "${MONITOR_ID}" 'map(.azureMonitorWorkspaceResourceId) | contains([$id])')
+IS_INTEGRATED=$(echo "$MONITORS" | jq --arg id "${MONITOR_ID}" 'map(.azureMonitorWorkspaceResourceId | ascii_downcase) | contains([($id | ascii_downcase)])')
 if [[ ${IS_INTEGRATED} == "false" ]];
 then
     MONITOR_UPDATES=$(echo "${MONITORS}" | jq --arg id "${MONITOR_ID}" '. + [{"azureMonitorWorkspaceResourceId": $id}]')
-    az resource update --ids "${GRAFANA_RESOURCE_ID}" --set properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations="${MONITOR_UPDATES}"
-    az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}"
+    retry_command az resource update --ids "${GRAFANA_RESOURCE_ID}" --set properties.grafanaIntegrations.azureMonitorWorkspaceIntegrations="${MONITOR_UPDATES}" --api-version 2024-10-01
+    az resource wait --custom "properties.provisioningState=='Succeeded'" --ids "${GRAFANA_RESOURCE_ID}" --api-version 2024-10-01
 fi

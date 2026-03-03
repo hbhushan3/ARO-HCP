@@ -10,18 +10,27 @@ param enableSoftDelete bool
 @description('Toggle to make the keyvault private.')
 param private bool
 
-@description('Purpose of the keyvault.')
-param purpose string
+@description('Tag key for the keyvault.')
+param tagKey string
 
-@description('Log Analytics Workspace ID if logging to Log Analytics')
-param logAnalyticsWorkspaceId string = ''
+@description('Tag value for the keyvault.')
+param tagValue string
+
+@description('Principal ID for KV certificate officer')
+param kvCertOfficerPrincipalId string = ''
+
+@description('Principal ID for EV2 certificate access, i.e. geneva log/action access')
+param kvCertAccessPrincipalId string = ''
+
+@description('Roles used for EV2 KeyVault access, i.e. geneva log/action access')
+param kvCertAccessRoleId string = ''
 
 resource keyVault 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
   location: location
   name: keyVaultName
   tags: {
     resourceGroup: resourceGroup().name
-    aroHCPPurpose: purpose
+    '${tagKey}': tagValue
   }
   properties: {
     enableRbacAuthorization: true
@@ -38,21 +47,35 @@ resource keyVault 'Microsoft.KeyVault/vaults@2024-04-01-preview' = {
   }
 }
 
-resource keyVaultDiagnosticSettings 'Microsoft.Insights/diagnosticSettings@2017-05-01-preview' = if (logAnalyticsWorkspaceId != '') {
-  scope: keyVault
-  name: keyVaultName
-  properties: {
-    logs: [
-      {
-        category: 'AuditEvent'
-        enabled: true
-      }
-      {
-        category: 'AzurePolicyEvaluationDetails'
-        enabled: true
-      }
-    ]
-    workspaceId: logAnalyticsWorkspaceId
+//
+//   E V 2    K V    A C C E S S
+//
+
+module kvCertOfficer 'keyvault-secret-access.bicep' = if (kvCertOfficerPrincipalId != '') {
+  name: guid(kvCertOfficerPrincipalId, keyVaultName, 'cert-officer')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Key Vault Certificates Officer'
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
+  }
+}
+
+module kvSecretsOfficer 'keyvault-secret-access.bicep' = if (kvCertOfficerPrincipalId != '') {
+  name: guid(kvCertOfficerPrincipalId, keyVaultName, 'secrets-officer')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Key Vault Secrets Officer'
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
+  }
+}
+
+module ev2CertAccess 'keyvault-secret-access.bicep' = if (kvCertAccessPrincipalId != '' && kvCertAccessRoleId != '') {
+  name: guid(kvCertOfficerPrincipalId, keyVaultName, 'certificate-access')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Azure Service Deploy Release Management Key Vault Secrets User'
+    managedIdentityPrincipalIds: [kvCertAccessPrincipalId]
+    kvCertAccessRoleId: kvCertAccessRoleId
   }
 }
 

@@ -17,9 +17,10 @@ package ocm
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/trace"
+
 	arohcpv1alpha1 "github.com/openshift-online/ocm-sdk-go/arohcp/v1alpha1"
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Azure/ARO-HCP/internal/tracing"
 )
@@ -45,10 +46,6 @@ func (csc *clusterServiceClientWithTracing) startChildSpan(ctx context.Context, 
 		TracerProvider().
 		Tracer(csc.tracerName).
 		Start(ctx, name)
-}
-
-func (csc *clusterServiceClientWithTracing) AddProperties(builder *arohcpv1alpha1.ClusterBuilder) *arohcpv1alpha1.ClusterBuilder {
-	return csc.csc.AddProperties(builder)
 }
 
 func (csc *clusterServiceClientWithTracing) GetCluster(ctx context.Context, internalID InternalID) (*arohcpv1alpha1.Cluster, error) {
@@ -86,11 +83,25 @@ func (csc *clusterServiceClientWithTracing) GetClusterInflightChecks(ctx context
 	return csc.csc.GetClusterInflightChecks(ctx, internalID)
 }
 
-func (csc *clusterServiceClientWithTracing) PostCluster(ctx context.Context, cluster *arohcpv1alpha1.Cluster) (*arohcpv1alpha1.Cluster, error) {
+func (csc *clusterServiceClientWithTracing) GetClusterHypershiftDetails(ctx context.Context, internalID InternalID) (*cmv1.HypershiftConfig, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.GetClusterHypershiftDetails")
+	defer span.End()
+
+	return csc.csc.GetClusterHypershiftDetails(ctx, internalID)
+}
+
+func (csc *clusterServiceClientWithTracing) GetClusterProvisionShard(ctx context.Context, internalID InternalID) (*arohcpv1alpha1.ProvisionShard, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.GetClusterProvisionShard")
+	defer span.End()
+
+	return csc.csc.GetClusterProvisionShard(ctx, internalID)
+}
+
+func (csc *clusterServiceClientWithTracing) PostCluster(ctx context.Context, clusterBuilder *arohcpv1alpha1.ClusterBuilder, autoscalerBuilder *arohcpv1alpha1.ClusterAutoscalerBuilder) (*arohcpv1alpha1.Cluster, error) {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.PostCluster")
 	defer span.End()
 
-	cluster, err := csc.csc.PostCluster(ctx, cluster)
+	cluster, err := csc.csc.PostCluster(ctx, clusterBuilder, autoscalerBuilder)
 	if err != nil {
 		span.RecordError(err)
 	} else {
@@ -100,11 +111,11 @@ func (csc *clusterServiceClientWithTracing) PostCluster(ctx context.Context, clu
 	return cluster, err
 }
 
-func (csc *clusterServiceClientWithTracing) UpdateCluster(ctx context.Context, internalID InternalID, cluster *arohcpv1alpha1.Cluster) (*arohcpv1alpha1.Cluster, error) {
+func (csc *clusterServiceClientWithTracing) UpdateCluster(ctx context.Context, internalID InternalID, builder *arohcpv1alpha1.ClusterBuilder) (*arohcpv1alpha1.Cluster, error) {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.UpdateCluster")
 	defer span.End()
 
-	cluster, err := csc.csc.UpdateCluster(ctx, internalID, cluster)
+	cluster, err := csc.csc.UpdateCluster(ctx, internalID, builder)
 	if err != nil {
 		span.RecordError(err)
 	} else {
@@ -112,6 +123,21 @@ func (csc *clusterServiceClientWithTracing) UpdateCluster(ctx context.Context, i
 	}
 
 	return cluster, err
+}
+
+func (csc *clusterServiceClientWithTracing) UpdateClusterAutoscaler(ctx context.Context, internalID InternalID, builder *arohcpv1alpha1.ClusterAutoscalerBuilder) (*arohcpv1alpha1.ClusterAutoscaler, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.UpdateClusterAutoscaler")
+	defer span.End()
+
+	autoscaler, err := csc.csc.UpdateClusterAutoscaler(ctx, internalID, builder)
+	if err != nil {
+		span.RecordError(err)
+	}
+
+	// FIXME Can't call tracing.SetClusterAttributes to identify the cluster.
+	//       Do we need a tracing function that picks apart an InternalID?
+
+	return autoscaler, err
 }
 
 func (csc *clusterServiceClientWithTracing) DeleteCluster(ctx context.Context, internalID InternalID) error {
@@ -161,11 +187,11 @@ func (csc *clusterServiceClientWithTracing) GetNodePoolStatus(ctx context.Contex
 	return nodePoolStatus, err
 }
 
-func (csc *clusterServiceClientWithTracing) PostNodePool(ctx context.Context, clusterInternalID InternalID, nodePool *arohcpv1alpha1.NodePool) (*arohcpv1alpha1.NodePool, error) {
+func (csc *clusterServiceClientWithTracing) PostNodePool(ctx context.Context, clusterInternalID InternalID, builder *arohcpv1alpha1.NodePoolBuilder) (*arohcpv1alpha1.NodePool, error) {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.PostNodePool")
 	defer span.End()
 
-	nodePool, err := csc.csc.PostNodePool(ctx, clusterInternalID, nodePool)
+	nodePool, err := csc.csc.PostNodePool(ctx, clusterInternalID, builder)
 	if err != nil {
 		span.RecordError(err)
 	} else {
@@ -175,11 +201,11 @@ func (csc *clusterServiceClientWithTracing) PostNodePool(ctx context.Context, cl
 	return nodePool, err
 }
 
-func (csc *clusterServiceClientWithTracing) UpdateNodePool(ctx context.Context, internalID InternalID, nodePool *arohcpv1alpha1.NodePool) (*arohcpv1alpha1.NodePool, error) {
+func (csc *clusterServiceClientWithTracing) UpdateNodePool(ctx context.Context, internalID InternalID, builder *arohcpv1alpha1.NodePoolBuilder) (*arohcpv1alpha1.NodePool, error) {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.UpdateNodePool")
 	defer span.End()
 
-	nodePool, err := csc.csc.UpdateNodePool(ctx, internalID, nodePool)
+	nodePool, err := csc.csc.UpdateNodePool(ctx, internalID, builder)
 	if err != nil {
 		span.RecordError(err)
 	} else {
@@ -212,23 +238,130 @@ func (csc *clusterServiceClientWithTracing) GetBreakGlassCredential(ctx context.
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.GetBreakGlassCredential")
 	defer span.End()
 
-	return csc.csc.GetBreakGlassCredential(ctx, internalID)
+	credential, err := csc.csc.GetBreakGlassCredential(ctx, internalID)
+	if err != nil {
+		span.RecordError(err)
+	} else {
+		tracing.SetBreakGlassCredentialAttributes(span, credential)
+	}
+
+	return credential, err
+}
+
+func (csc *clusterServiceClientWithTracing) GetExternalAuth(ctx context.Context, internalID InternalID) (*arohcpv1alpha1.ExternalAuth, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.GetExternalAuth")
+	defer span.End()
+
+	externalAuth, err := csc.csc.GetExternalAuth(ctx, internalID)
+	if err != nil {
+		span.RecordError(err)
+	} else {
+		tracing.SetExternalAuthAttributes(span, externalAuth)
+	}
+
+	return externalAuth, err
+}
+
+func (csc *clusterServiceClientWithTracing) PostExternalAuth(ctx context.Context, clusterInternalID InternalID, builder *arohcpv1alpha1.ExternalAuthBuilder) (*arohcpv1alpha1.ExternalAuth, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.PostExternalAuth")
+	defer span.End()
+
+	externalAuth, err := csc.csc.PostExternalAuth(ctx, clusterInternalID, builder)
+	if err != nil {
+		span.RecordError(err)
+	} else {
+		tracing.SetExternalAuthAttributes(span, externalAuth)
+	}
+
+	return externalAuth, err
+}
+
+func (csc *clusterServiceClientWithTracing) UpdateExternalAuth(ctx context.Context, internalID InternalID, builder *arohcpv1alpha1.ExternalAuthBuilder) (*arohcpv1alpha1.ExternalAuth, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.UpdateExternalAuth")
+	defer span.End()
+
+	externalAuth, err := csc.csc.UpdateExternalAuth(ctx, internalID, builder)
+	if err != nil {
+		span.RecordError(err)
+	} else {
+		tracing.SetExternalAuthAttributes(span, externalAuth)
+	}
+
+	return externalAuth, err
+}
+
+func (csc *clusterServiceClientWithTracing) DeleteExternalAuth(ctx context.Context, internalID InternalID) error {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.DeleteExternalAuth")
+	defer span.End()
+
+	span.SetAttributes(
+		tracing.ExternalAuthIDKey.String(internalID.ID()),
+	)
+	err := csc.csc.DeleteExternalAuth(ctx, internalID)
+	if err != nil {
+		span.RecordError(err)
+	}
+
+	return err
+}
+
+func (csc *clusterServiceClientWithTracing) ListExternalAuths(clusterInternalID InternalID, searchExpression string) ExternalAuthListIterator {
+	return csc.csc.ListExternalAuths(clusterInternalID, searchExpression)
 }
 
 func (csc *clusterServiceClientWithTracing) PostBreakGlassCredential(ctx context.Context, clusterInternalID InternalID) (*cmv1.BreakGlassCredential, error) {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.PostBreakGlassCredential")
 	defer span.End()
 
-	return csc.csc.PostBreakGlassCredential(ctx, clusterInternalID)
+	credential, err := csc.csc.PostBreakGlassCredential(ctx, clusterInternalID)
+	if err != nil {
+		span.RecordError(err)
+	} else {
+		tracing.SetBreakGlassCredentialAttributes(span, credential)
+	}
+
+	return credential, err
 }
 
 func (csc *clusterServiceClientWithTracing) DeleteBreakGlassCredentials(ctx context.Context, clusterInternalID InternalID) error {
 	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.DeleteBreakGlassCredentials")
 	defer span.End()
 
-	return csc.csc.DeleteBreakGlassCredentials(ctx, clusterInternalID)
+	span.SetAttributes(
+		tracing.ClusterIDKey.String(clusterInternalID.ID()),
+	)
+	err := csc.csc.DeleteBreakGlassCredentials(ctx, clusterInternalID)
+	if err != nil {
+		span.RecordError(err)
+	}
+
+	return err
 }
 
-func (csc *clusterServiceClientWithTracing) ListBreakGlassCredentials(clusterInternalID InternalID, searchExpression string) BreakGlassCredentialListIterator {
+func (csc *clusterServiceClientWithTracing) ListBreakGlassCredentials(clusterInternalID InternalID, searchExpression string) *BreakGlassCredentialListIterator {
 	return csc.csc.ListBreakGlassCredentials(clusterInternalID, searchExpression)
+}
+
+func (csc *clusterServiceClientWithTracing) GetVersion(ctx context.Context, versionName string) (*arohcpv1alpha1.Version, error) {
+	return csc.csc.GetVersion(ctx, versionName)
+}
+
+func (csc *clusterServiceClientWithTracing) ListVersions() *VersionsListIterator {
+	return csc.csc.ListVersions()
+}
+
+func (csc *clusterServiceClientWithTracing) ListControlPlaneUpgradePolicies(clusterInternalID InternalID, orderBy string) ControlPlaneUpgradePolicyListIterator {
+	return csc.csc.ListControlPlaneUpgradePolicies(clusterInternalID, orderBy)
+}
+
+func (csc *clusterServiceClientWithTracing) PostControlPlaneUpgradePolicy(ctx context.Context, clusterInternalID InternalID, builder *arohcpv1alpha1.ControlPlaneUpgradePolicyBuilder) (*arohcpv1alpha1.ControlPlaneUpgradePolicy, error) {
+	ctx, span := csc.startChildSpan(ctx, "ClusterServiceClient.PostControlPlaneUpgradePolicy")
+	defer span.End()
+
+	policy, err := csc.csc.PostControlPlaneUpgradePolicy(ctx, clusterInternalID, builder)
+	if err != nil {
+		span.RecordError(err)
+	}
+
+	return policy, err
 }

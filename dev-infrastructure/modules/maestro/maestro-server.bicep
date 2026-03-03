@@ -66,10 +66,14 @@ param maestroServerManagedIdentityPrincipalId string
 @description('The resource ID of the managed identity used to manage the Postgres server')
 param postgresAdministrationManagedIdentityId string
 
+@description('The zone redundant mode of the Postgres Database')
 param postgresZoneRedundantMode string
 
-@description('The log analytics workspace ID to link to the server.')
-param logAnalyticsWorkspaceId string = ''
+@description('The number of days to retain backups for.')
+param postgresBackupRetentionDays int
+
+@description('Enable geo-redundant backups for the PostgreSQL server.')
+param postgresGeoRedundantBackup bool
 
 @description('The regional resource group')
 param regionalResourceGroup string
@@ -81,7 +85,7 @@ param regionalResourceGroup string
 import * as res from '../resource.bicep'
 
 module maestroPostgres '../postgres/postgres.bicep' = if (deployPostgres) {
-  name: '${deployment().name}-postgres'
+  name: 'maestro-postgres-deployment'
   scope: resourceGroup(regionalResourceGroup)
   params: {
     name: postgresServerName
@@ -120,18 +124,19 @@ module maestroPostgres '../postgres/postgres.bicep' = if (deployPostgres) {
       startHour: 1
       startMinute: 12
     }
+    backupRetentionDays: postgresBackupRetentionDays
+    geoRedundantBackup: postgresGeoRedundantBackup
     storageSizeGB: postgresServerStorageSizeGB
     private: postgresServerPrivate
     subnetId: privateEndpointSubnetId
     vnetId: privateEndpointVnetId
     managedPrivateEndpoint: true
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
     managedPrivateEndpointResourceGroup: privateEndpointResourceGroup
   }
 }
 
 module maestroManagedIdentityDatabaseAccess '../postgres/postgres-access.bicep' = if (deployPostgres) {
-  name: '${deployment().name}-maestro-db-access'
+  name: 'maestro-db-access'
   scope: resourceGroup(regionalResourceGroup)
   params: {
     postgresServerName: postgresServerName
@@ -149,22 +154,22 @@ module maestroManagedIdentityDatabaseAccess '../postgres/postgres-access.bicep' 
 //   E V E N T G R I D   A C C E S S
 //
 
-module eventGridClientCert 'maestro-access-cert.bicep' = {
-  name: '${deployment().name}-eg-crt-${uniqueString(mqttClientName)}'
+module eventGridClientCert '../keyvault/key-vault-cert-with-access.bicep' = {
+  name: 'maestro-eg-crt-${uniqueString(mqttClientName)}'
   scope: resourceGroup(certKeyVaultResourceGroup)
   params: {
     keyVaultName: certKeyVaultName
     kvCertOfficerManagedIdentityResourceId: keyVaultOfficerManagedIdentityName
     certDomain: maestroCertificateDomain
     certificateIssuer: maestroCertificateIssuer
-    clientName: mqttClientName
+    hostName: mqttClientName
     keyVaultCertificateName: mqttClientName
     certificateAccessManagedIdentityPrincipalId: maestroServerManagedIdentityPrincipalId
   }
 }
 
 module evengGridAccess 'maestro-eventgrid-access.bicep' = {
-  name: '${deployment().name}-eg-access'
+  name: 'maestro-eg-access-${uniqueString(mqttClientName)}'
   scope: resourceGroup(maestroInfraResourceGroup)
   params: {
     eventGridNamespaceName: maestroEventGridNamespaceName

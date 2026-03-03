@@ -16,11 +16,14 @@ package options
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
+	"github.com/Azure/ARO-Tools/config"
+	"github.com/Azure/ARO-Tools/config/types"
 )
 
 func DefaultOptions() *RawOptions {
@@ -31,6 +34,7 @@ func DefaultOptions() *RawOptions {
 
 func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().StringVar(&opts.ConfigFile, "config-file", opts.ConfigFile, "config file path")
+	cmd.Flags().StringVar(&opts.ConfigFileOverride, "config-file-override", opts.ConfigFileOverride, "config file override path")
 	cmd.Flags().StringVar(&opts.Cloud, "cloud", opts.Cloud, "the cloud (public, fairfax, dev)")
 	cmd.Flags().StringVar(&opts.DeployEnv, "deploy-env", opts.DeployEnv, "the deploy environment")
 	cmd.Flags().StringVar(&opts.Ev2Cloud, "ev2-cloud", opts.Ev2Cloud, "the Ev2 cloud to use when resolving config, if different from --cloud")
@@ -39,10 +43,11 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 
 // RawOptions holds input values.
 type RawOptions struct {
-	ConfigFile string
-	Cloud      string
-	DeployEnv  string
-	Ev2Cloud   string
+	ConfigFile         string
+	ConfigFileOverride string
+	Cloud              string
+	DeployEnv          string
+	Ev2Cloud           string
 }
 
 func (o *RawOptions) Validate() (*ValidatedOptions, error) {
@@ -69,9 +74,25 @@ type ValidatedOptions struct {
 }
 
 func (o *ValidatedOptions) Complete() (*Options, error) {
-	configProvider, err := config.NewConfigProvider(o.ConfigFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load service config: %v", err)
+	var configProvider config.ConfigProvider
+	var err error
+
+	if o.ConfigFileOverride != "" {
+		schemaBaseDir := filepath.Dir(o.ConfigFile)
+		mergedConfigData, err := types.MergeRawConfigurationFiles(schemaBaseDir, []string{o.ConfigFile, o.ConfigFileOverride})
+		if err != nil {
+			return nil, fmt.Errorf("failed to merge configuration files: %w", err)
+		}
+
+		configProvider, err = config.NewConfigProviderFromData(mergedConfigData, schemaBaseDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config provider from merged configuration: %w", err)
+		}
+	} else {
+		configProvider, err = config.NewConfigProvider(o.ConfigFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load service config: %v", err)
+		}
 	}
 
 	return &Options{

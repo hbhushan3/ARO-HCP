@@ -1,0 +1,882 @@
+{
+  "description": "ARO HCP Cluster Service Component",
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 14,
+      "title": "Availability SLOs",
+      "type": "row"
+    },
+    {
+      "gridPos": {"h": 12, "w": 4, "x": 0, "y": 1},
+      "id": 29,
+      "options": {
+        "content": "Over a 28-day rolling window, 99% of API requests will return with a successful status, where successful is defined as a non-5xx HTTP response code.",
+        "mode": "markdown"
+      },
+      "title": "SLO Definition: Availability",
+      "type": "text"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Percentage of CS API is available (not returning 5xx Internal Service Errors).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {"color": "dark-red"},
+              {"color": "green", "value": 99}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 1},
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Availability",
+          "refId": "A"
+        }
+      ],
+      "title": "Availability",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "**Purpose:** This graph displays the Error Budget Burn Rate over the past 28 days to monitor the long-term reliability of Clusters Service Availability.\n\n---\n\n### **Understanding Long-Term Burn Rate Recovery**\n\nThe 28-day Burn Rate is a rolling cumulative metric. After an incident, even if short-term performance looks good, the long-term Burn Rate may remain consistently high and recover slowly. This typically happens because:\n\n1.  **Old Good Data Ages Out:** As time passes, older, well-performing data rolls out of the 28-day window, and new data might not fully compensate for its positive contribution.\n2.  **Traffic Impact:** If traffic (RPS) is high at the time of the incident, problematic requests will constitute a larger proportion of the rolling window.  In such scenarios, error dilution becomes difficult, extending the Burn Rate's recovery period, and this impact is further amplified for services with low sample volume and potentially high incident density.\n3.  **Limited Dilution Capacity:** The weight and volume of newly added healthy requests may be insufficient to quickly dilute historical errors, slowing down the Burn Rate's decrease.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 100,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {"color": "green"},
+              {"color": "#EAB839", "value": 75},
+              {"color": "red", "value": 90}
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {"h": 6, "w": 9, "x": 9, "y": 1},
+      "id": 28,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - availability:api_inbound_request_count:sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}) * 100",
+          "legendFormat": "Error budget burn rate",
+          "refId": "A"
+        }
+      ],
+      "title": "Availability - Error Budget Burn Rate (28d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "An error budget is the maximum amount of allowable errors a service can incur within its SLO window before it is considered out of compliance with its reliability target. \n\nThe Error budget exhaustion shows how much allowable errors the service has used. \n\nFor example, we have API Availability 99% target value, that means the error budget is 1%. Suppose that actual value is 99.7%, that means the error budget exhaustion is 30%",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "yellow", "value": 0.75},
+              {"color": "red", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 1},
+      "id": 22,
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - availability:api_inbound_request_count:sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}) * 100",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Budget Exhaustion (99%)",
+      "type": "gauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 5 minutes and last 1 hour remains at 13.44 or greater.\n\nThis threshold means consuming:\n-  2% of the error budget in 1h \n-  100% in approximately 2 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 20,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 13.44}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 7},
+      "id": 31,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "clamp_min(availability:api_inbound_request_count:burnrate5m{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}, 0)",
+          "legendFormat": "Burn Rate - 5m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "clamp_min(availability:api_inbound_request_count:burnrate1h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}, 0)",
+          "legendFormat": "Burn Rate - 1h",
+          "refId": "A"
+        }
+      ],
+      "title": "Critical Burn Rate Alert (5m & 1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 30 minutes and last 6 hours remains at 5.6 or greater.\n\nThis threshold means consuming:\n-  5% of the error budget in 6h \n-  100% in 5 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 10,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 5.6}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 9, "y": 7},
+      "id": 32,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate30m{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 30m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate6h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 6h",
+          "refId": "A"
+        }
+      ],
+      "title": "Critical Burn Rate Alert (30m & 6h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 2 hours and last 1 days remains at 2.8 or greater. \n\nThis threshold means consuming:\n-  10% of the error budget in 1 day \n-  100% in approximately 10 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 5,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 2.8}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 14, "y": 7},
+      "id": 38,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate2h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 2h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate1d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 1d",
+          "refId": "A"
+        }
+      ],
+      "title": "Warning Burn Rate Alert (2h & 1d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 6 hours and last 3 days remains at 0.934 or greater.\n\nThis threshold means consuming:\n-  10% of the error budget in 3 days \n-  100% in approximately 26 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 2,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 0.934}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 7},
+      "id": 34,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate6h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 6h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "availability:api_inbound_request_count:burnrate3d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 3d",
+          "refId": "A"
+        }
+      ],
+      "title": "Warning Burn Rate Alert (6h & 3d)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+      "id": 30,
+      "title": "Latency SLOs",
+      "type": "row"
+    },
+    {
+      "gridPos": {"h": 12, "w": 4, "x": 0, "y": 26},
+      "id": 41,
+      "options": {
+        "content": "Over a 28-day rolling window, 90% of successful API calls (determined as a non-5xx HTTP response) will complete within 100ms.",
+        "mode": "markdown"
+      },
+      "title": "SLO Definition: P90 Latency",
+      "type": "text"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Percentage of requests to operate cluster are successful with a latency of <100ms",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red"},
+              {"color": "green", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 26},
+      "id": 42,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P90 Latency",
+          "refId": "A"
+        }
+      ],
+      "title": "P90 Latency (< 100ms)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "**Purpose:** This graph displays the Error Budget Burn Rate over the past 28 days to monitor the long-term reliability of Clusters Service P90 Latency.\n\n---\n\n### **Understanding Long-Term Burn Rate Recovery**\n\nThe 28-day Burn Rate is a rolling cumulative metric. After an incident, even if short-term performance looks good, the long-term Burn Rate may remain consistently high and recover slowly. This typically happens because:\n\n1.  **Old Good Data Ages Out:** As time passes, older, well-performing data rolls out of the 28-day window, and new data might not fully compensate for its positive contribution.\n2.  **Traffic Impact:** If traffic (RPS) is high at the time of the incident, problematic requests will constitute a larger proportion of the rolling window.  In such scenarios, error dilution becomes difficult, extending the Burn Rate's recovery period, and this impact is further amplified for services with low sample volume and potentially high incident density.\n3.  **Limited Dilution Capacity:** The weight and volume of newly added healthy requests may be insufficient to quickly dilute historical errors, slowing down the Burn Rate's decrease.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 1,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "#EAB839", "value": 0.75},
+              {"color": "red", "value": 0.9}
+            ]
+          }
+        }
+      },
+      "gridPos": {"h": 6, "w": 9, "x": 9, "y": 26},
+      "id": 43,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - latency:api_inbound_request_duration:p90_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}) * 10",
+          "legendFormat": "P90 Error budget burn rate",
+          "refId": "C"
+        }
+      ],
+      "title": "P90 Latency - Error Budget Burn Rate (28d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "An error budget is the maximum amount of allowable errors a service can incur within its SLO window before it is considered out of compliance with its reliability target. \n\nThe Error budget exhaustion shows how much allowable errors the service has used. \n\nFor example, we have P90 API Latency 90% target value, that means the error budget is 10%. Suppose that actual value is 95%, that means the error budget exhaustion is 50%",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "yellow", "value": 0.75},
+              {"color": "red", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 26},
+      "id": 44,
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - latency:api_inbound_request_duration:p90_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"})/(1 - 0.90)",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Budget Exhaustion (90%)",
+      "type": "gauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 5 minutes and last 1 hour remains at 13.44 or greater.\n\nThis threshold means consuming:\n-  2% of the error budget in 1h \n-  100% in approximately 2 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 20,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 13.44}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 32},
+      "id": 45,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate5m{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P90 Burn Rate - 5m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate1h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P90 Burn Rate - 1h",
+          "refId": "A"
+        }
+      ],
+      "title": "P90 Critical Burn Rate Alert (5m & 1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 30 minutes and last 6 hours remains at 5.6 or greater.\n\nThis threshold means consuming:\n-  5% of the error budget in 6h \n-  100% in 5 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 10,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 5.6}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 9, "y": 32},
+      "id": 46,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate30m{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 30m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate6h{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 6h",
+          "refId": "A"
+        }
+      ],
+      "title": "P90 Critical Burn Rate Alert (30m & 6h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 2 hours and last 1 days remains at 2.8 or greater. \n\n\nThis threshold means consuming:\n-  10% of the error budget in 1 day \n-  100% in approximately 10 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 5,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 2.8}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 14, "y": 32},
+      "id": 47,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate2h{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 2h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate1d{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 1d",
+          "refId": "A"
+        }
+      ],
+      "title": "P90 Warning Burn Rate Alert (2h & 1d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 6 hours and last 3 days remains at 0.934 or greater.\n\nThis threshold means consuming:\n-  10% of the error budget in 3 days \n-  100% in approximately 26 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 2,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 0.934}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 32},
+      "id": 48,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate6h{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 6h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p90_burnrate3d{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "P90 Burn Rate - 3d",
+          "refId": "A"
+        }
+      ],
+      "title": "P90 Warning Burn Rate Alert (6h & 3d)",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {"h": 12, "w": 4, "x": 0, "y": 14},
+      "id": 49,
+      "options": {
+        "content": "Over a 28-day rolling window, 99% of successful API calls (determined as a non-5xx HTTP response) will complete within 1s.",
+        "mode": "markdown"
+      },
+      "title": "SLO Definition: P99 Latency",
+      "type": "text"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Percentage of requests to operate cluster are successful with a latency of <1s",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red"},
+              {"color": "green", "value": 0.99}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 14},
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P99 Latency",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 Latency (< 1s)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "**Purpose:** This graph displays the Error Budget Burn Rate over the past 28 days to monitor the long-term reliability of Clusters Service P99 Latency.\n\n---\n\n### **Understanding Long-Term Burn Rate Recovery**\n\nThe 28-day Burn Rate is a rolling cumulative metric. After an incident, even if short-term performance looks good, the long-term Burn Rate may remain consistently high and recover slowly. This typically happens because:\n\n1.  **Old Good Data Ages Out:** As time passes, older, well-performing data rolls out of the 28-day window, and new data might not fully compensate for its positive contribution.\n2.  **Traffic Impact:** If traffic (RPS) is high at the time of the incident, problematic requests will constitute a larger proportion of the rolling window.  In such scenarios, error dilution becomes difficult, extending the Burn Rate's recovery period, and this impact is further amplified for services with low sample volume and potentially high incident density.\n3.  **Limited Dilution Capacity:** The weight and volume of newly added healthy requests may be insufficient to quickly dilute historical errors, slowing down the Burn Rate's decrease.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 1,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "#EAB839", "value": 0.75},
+              {"color": "red", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 9, "x": 9, "y": 14},
+      "id": 27,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - latency:api_inbound_request_duration:p99_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}) * 100",
+          "legendFormat": "P99 Error budget burn rate",
+          "refId": "C"
+        }
+      ],
+      "title": "P99 Latency - Error Budget Burn Rate (28d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "An error budget is the maximum amount of allowable errors a service can incur within its SLO window before it is considered out of compliance with its reliability target. \n\nThe Error budget exhaustion shows how much allowable errors the service has used. \n\nFor example, we have API Availability 99% target value, that means the error budget is 1%. Suppose that actual value is 99.7%, that means the error budget exhaustion is 30%",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "yellow", "value": 0.75},
+              {"color": "red", "value": 0.9}
+            ]
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 14},
+      "id": 21,
+      "options": {
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "(1 - latency:api_inbound_request_duration:p99_sli_ratio_28d{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"})/(1 - 0.99)",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Budget Exhaustion (99%)",
+      "type": "gauge"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 5 minutes and last 1 hour remains at 13.44 or greater.\n\nThis threshold means consuming:\n-  2% of the error budget in 1h \n-  100% in approximately 2 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 20,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 13.44}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 4, "y": 20},
+      "id": 35,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate5m{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P99 Burn Rate - 5m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate1h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "P99 Burn Rate - 1h",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 Critical Burn Rate Alert (5m & 1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Page if the burn rate over the last 30 minutes and last 6 hours remains at 5.6 or greater.\n\nThis threshold means consuming:\n-  5% of the error budget in 6h \n-  100% in 5 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 10,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 5.6}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 9, "y": 20},
+      "id": 36,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate30m{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 30m",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate6h{cluster=\"$cluster\", namespace=\"clusters-service\", service=\"clusters-service-metrics\"}",
+          "legendFormat": "Burn Rate - 6h",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 Critical Burn Rate Alert (30m & 6h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 2 hours and last 1 days remains at 2.8 or greater. \n\n\nThis threshold means consuming:\n-  10% of the error budget in 1 day \n-  100% in approximately 10 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 5,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 2.8}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 14, "y": 20},
+      "id": 39,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate2h{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "Burn Rate - 2h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate1d{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "Burn Rate - 1d",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 Warning Burn Rate Alert (2h & 1d)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Send a warning notification if the burn rate over the last 6 hours and last 3 days remains at 0.934 or greater.\n\nThis threshold means consuming:\n-  10% of the error budget in 3 days \n-  100% in approximately 26 days",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "axisSoftMax": 2,
+            "axisSoftMin": 0,
+            "thresholdsStyle": {"mode": "dashed+area"}
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green"},
+              {"color": "red", "value": 0.934}
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 20},
+      "id": 37,
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate6h{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "Burn Rate - 6h",
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "latency:api_inbound_request_duration:p99_burnrate3d{cluster=\"$cluster\", service=\"clusters-service-metrics\", namespace=\"clusters-service\"}",
+          "legendFormat": "Burn Rate - 3d",
+          "refId": "A"
+        }
+      ],
+      "title": "P99 Warning Burn Rate Alert (6h & 3d)",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "templating": {
+    "list": [
+      {
+        "label": "Data Source",
+        "name": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "^Managed_Prometheus_services-.*$",
+        "type": "datasource"
+      },
+      {
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "definition": "label_values(up,cluster)",
+        "label": "cluster",
+        "name": "cluster",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(up,cluster)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "^.*-svc-\\d+$",
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-28d",
+    "to": "now"
+  },
+  "title": "ARO HCP CS SLOs (Compound Metrics)",
+  "uid": "aro-hcp-cs-slos-rec-rules"
+}

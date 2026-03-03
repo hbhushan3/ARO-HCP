@@ -20,245 +20,150 @@ import (
 	"net/http"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
-	arohcpv1alpha1 "github.com/openshift-online/ocm-sdk-go/arohcp/v1alpha1"
 
 	"github.com/Azure/ARO-HCP/internal/api"
 	"github.com/Azure/ARO-HCP/internal/api/arm"
 	"github.com/Azure/ARO-HCP/internal/database"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
-// CheckForProvisioningStateConflict returns a "409 Conflict" error response if the
+func addOperationResponseHeaders(writer http.ResponseWriter, request *http.Request, notificationURI string, operationID *azcorearm.ResourceID) database.DBTransactionCallback {
+	return func(result database.DBTransactionResult) {
+		// If ARM passed a notification URI, acknowledge it.
+		if len(notificationURI) > 0 {
+			writer.Header().Set(arm.HeaderNameAsyncNotification, "Enabled")
+		}
+
+		// Add callback header(s) based on the request method.
+		switch request.Method {
+		case http.MethodDelete, http.MethodPatch, http.MethodPost:
+			AddLocationHeader(writer, request, operationID)
+			fallthrough
+		case http.MethodPut:
+			AddAsyncOperationHeader(writer, request, operationID)
+		}
+	}
+}
+
+// checkForProvisioningStateConflict returns a "409 Conflict" error response if the
 // provisioning state of the resource is non-terminal, or any of its parent resources
-// within the same provider namespace are in a "Deleting" state.
-func (f *Frontend) CheckForProvisioningStateConflict(ctx context.Context, operationRequest database.OperationRequest, doc *database.ResourceDocument) *arm.CloudError {
-	logger := LoggerFromContext(ctx)
+// within the same provider namespace are in a "Provisioning" or "Deleting" state.
+// TODO we will collapse onto this function entirely once we complete the migration.  Creating a separate method now to avoid having to have a big bang
+func checkForProvisioningStateConflict(
+	ctx context.Context,
+	cosmosClient database.DBClient,
+	operationRequest database.OperationRequest,
+	resourceID *azcorearm.ResourceID,
+	provisioningState arm.ProvisioningState,
+) error {
 
 	switch operationRequest {
 	case database.OperationRequestCreate:
 		// Resource must already exist for there to be a conflict.
 	case database.OperationRequestDelete:
-		if doc.ProvisioningState == arm.ProvisioningStateDeleting {
+		if provisioningState == arm.ProvisioningStateDeleting {
 			return arm.NewConflictError(
-				doc.ResourceID,
+				resourceID,
 				"Resource is already deleting")
 		}
 	case database.OperationRequestUpdate:
 		// Defer to Cluster Service for ProvisioningStateFailed since
 		// it is ambiguous about whether the resource is functional.
-		if !doc.ProvisioningState.IsTerminal() {
+		if !provisioningState.IsTerminal() {
 			return arm.NewConflictError(
-				doc.ResourceID,
-				"Cannot update resource while resource is %s",
-				strings.ToLower(string(doc.ProvisioningState)))
+				resourceID,
+				"Cannot update resource while resource is %q",
+				strings.ToLower(string(provisioningState)))
 		}
 	case database.OperationRequestRequestCredential:
 		// Defer to Cluster Service for ProvisioningStateFailed since
 		// it is ambiguous about whether the resource is functional.
-		if !doc.ProvisioningState.IsTerminal() {
+		if !provisioningState.IsTerminal() {
 			return arm.NewConflictError(
-				doc.ResourceID,
-				"Cannot request credential while resource is %s",
-				strings.ToLower(string(doc.ProvisioningState)))
+				resourceID,
+				"Cannot request credential while resource is %q",
+				strings.ToLower(string(provisioningState)))
 		}
 	case database.OperationRequestRevokeCredentials:
 		// Defer to Cluster Service for ProvisioningStateFailed since
 		// it is ambiguous about whether the resource is functional.
-		if !doc.ProvisioningState.IsTerminal() {
+		if !provisioningState.IsTerminal() {
 			return arm.NewConflictError(
-				doc.ResourceID,
-				"Cannot revoke credentials while resource is %s",
-				strings.ToLower(string(doc.ProvisioningState)))
+				resourceID,
+				"Cannot revoke credentials while resource is %q",
+				strings.ToLower(string(provisioningState)))
 		}
 	}
 
-	parent := doc.ResourceID.Parent
+	// For nested resource types, check the provisioning state of the parent cluster.
+	if strings.EqualFold(resourceID.ResourceType.String(), api.NodePoolResourceType.String()) ||
+		strings.EqualFold(resourceID.ResourceType.String(), api.ExternalAuthResourceType.String()) {
 
-	// ResourceType casing is preserved for parents in the same namespace.
-	for parent.ResourceType.Namespace == doc.ResourceID.ResourceType.Namespace {
-		_, parentDoc, err := f.dbClient.GetResourceDoc(ctx, parent)
+		cluster, err := cosmosClient.HCPClusters(resourceID.SubscriptionID, resourceID.ResourceGroupName).Get(ctx, resourceID.Parent.Name)
 		if err != nil {
-			logger.Error(err.Error())
-			return arm.NewInternalServerError()
+			return utils.TrackError(err)
 		}
 
-		if parentDoc.ProvisioningState == arm.ProvisioningStateDeleting {
+		// XXX There is still a small opportunity for nested resource requests to get
+		//     through while the parent resource is in provisioning state "Accepted",
+		//     which precedes "Provisioning". The problem is "Accepted" also precedes
+		//     "Updating", which should NOT be blocked.
+		//
+		//     Cluster Service will catch and correctly reject such requests, so I'm
+		//     leaving this gap open until Cluster Service is out of the picture and
+		//     the RP has more direct control over resource provisioning.
+		if cluster.ServiceProviderProperties.ProvisioningState == arm.ProvisioningStateProvisioning {
 			return arm.NewConflictError(
-				doc.ResourceID,
-				"Cannot %s resource while parent resource is deleting",
+				resourceID,
+				"Cannot %s resource while parent resource is provisioning",
 				strings.ToLower(string(operationRequest)))
 		}
 
-		parent = parent.Parent
+		if cluster.ServiceProviderProperties.ProvisioningState == arm.ProvisioningStateDeleting {
+			return arm.NewConflictError(
+				resourceID,
+				"Cannot %s resource while parent resource is deleting",
+				strings.ToLower(string(operationRequest)))
+		}
 	}
 
 	return nil
 }
 
-func (f *Frontend) DeleteAllResources(ctx context.Context, subscriptionID string) *arm.CloudError {
-	logger := LoggerFromContext(ctx)
+func (f *Frontend) DeleteAllResourcesInSubscription(ctx context.Context, subscriptionID string) error {
+	transaction := f.dbClient.NewTransaction(subscriptionID)
 
-	prefix, err := azcorearm.ParseResourceID("/subscriptions/" + subscriptionID)
+	clusterIterator, err := f.dbClient.HCPClusters(subscriptionID, "").List(ctx, nil)
 	if err != nil {
-		logger.Error(err.Error())
-		return arm.NewInternalServerError()
+		return utils.TrackError(err)
 	}
-
-	transaction := f.dbClient.NewTransaction(database.NewPartitionKey(subscriptionID))
-
-	dbIterator := f.dbClient.ListResourceDocs(prefix, -1, nil)
-
-	// Start a deletion operation for all clusters under the subscription.
-	// Cluster Service will delete all node pools belonging to these clusters
-	// so we don't need to explicitly delete node pools here.
-	for resourceItemID, resourceDoc := range dbIterator.Items(ctx) {
-		if !strings.EqualFold(resourceDoc.ResourceID.ResourceType.String(), api.ClusterResourceType.String()) {
+	for _, cluster := range clusterIterator.Items(ctx) {
+		if cluster.ServiceProviderProperties.ProvisioningState == arm.ProvisioningStateDeleting {
+			// don't try to delete already deleting clusters.  If we call the delete on them, the call will fail
+			// on various problems from cluster-service. We trust the existing delete is doing good things.
 			continue
 		}
-
-		// Allow this method to be idempotent.
-		if resourceDoc.ProvisioningState != arm.ProvisioningStateDeleting {
-			_, cloudError := f.DeleteResource(ctx, transaction, resourceItemID, resourceDoc)
-			if cloudError != nil {
-				return cloudError
-			}
+		if err := f.addDeleteClusterToTransaction(ctx, nil, nil, transaction, cluster); err != nil {
+			return utils.TrackError(err)
 		}
 	}
-
-	err = dbIterator.GetError()
-	if err != nil {
-		logger.Error(err.Error())
-		return arm.NewInternalServerError()
+	if err = clusterIterator.GetError(); err != nil {
+		return utils.TrackError(err)
 	}
 
 	_, err = transaction.Execute(ctx, nil)
 	if err != nil {
-		logger.Error(err.Error())
-		return arm.NewInternalServerError()
+		return utils.TrackError(err)
 	}
 
 	return nil
 }
 
-func (f *Frontend) DeleteResource(ctx context.Context, transaction database.DBTransaction, resourceItemID string, resourceDoc *database.ResourceDocument) (string, *arm.CloudError) {
-	const operationRequest = database.OperationRequestDelete
-	var err error
-
-	logger := LoggerFromContext(ctx)
-
-	switch resourceDoc.InternalID.Kind() {
-	case arohcpv1alpha1.ClusterKind:
-		err = f.clusterServiceClient.DeleteCluster(ctx, resourceDoc.InternalID)
-
-	case arohcpv1alpha1.NodePoolKind:
-		err = f.clusterServiceClient.DeleteNodePool(ctx, resourceDoc.InternalID)
-
-	default:
-		logger.Error(fmt.Sprintf("unsupported Cluster Service path: %s", resourceDoc.InternalID))
-		return "", arm.NewInternalServerError()
-	}
-
-	if err != nil {
-		cloudError := CSErrorToCloudError(err, resourceDoc.ResourceID)
-		// Do not log attempts to delete a nonexistent
-		// resource because the end result is the same.
-		if cloudError.StatusCode != http.StatusNotFound {
-			logger.Error(err.Error())
-		}
-		return "", cloudError
-	}
-
-	// Cluster Service will take care of canceling any ongoing operations
-	// on the resource or child resources, but we need to do some database
-	// bookkeeping to reflect that.
-
-	err = f.CancelActiveOperations(ctx, transaction, &database.DBClientListActiveOperationDocsOptions{
-		ExternalID:             resourceDoc.ResourceID,
-		IncludeNestedResources: true,
+func nameResourceIDMismatch(resourceID *azcorearm.ResourceID, name string) error {
+	return arm.CloudErrorFromFieldErrors(field.ErrorList{
+		field.Invalid(field.NewPath("name"), name, fmt.Sprintf("name must match resourceID path: %v", resourceID)),
 	})
-	if err != nil {
-		logger.Error(err.Error())
-		return "", arm.NewInternalServerError()
-	}
-
-	operationDoc := database.NewOperationDocument(operationRequest, resourceDoc.ResourceID, resourceDoc.InternalID)
-	operationID := transaction.CreateOperationDoc(operationDoc, nil)
-
-	var patchOperations database.ResourceDocumentPatchOperations
-	patchOperations.SetActiveOperationID(&operationID)
-	patchOperations.SetProvisioningState(operationDoc.Status)
-	transaction.PatchResourceDoc(resourceItemID, patchOperations, nil)
-
-	iterator := f.dbClient.ListResourceDocs(resourceDoc.ResourceID, -1, nil)
-
-	for childItemID, childResourceDoc := range iterator.Items(ctx) {
-		// This operation is not accessible through any REST endpoint.
-		// Its purpose is to cause the backend to delete the resource
-		// document once resource deletion completes.
-
-		childOperationDoc := database.NewOperationDocument(operationRequest, childResourceDoc.ResourceID, childResourceDoc.InternalID)
-		childOperationID := transaction.CreateOperationDoc(childOperationDoc, nil)
-
-		var patchOperations database.ResourceDocumentPatchOperations
-		patchOperations.SetActiveOperationID(&childOperationID)
-		patchOperations.SetProvisioningState(childOperationDoc.Status)
-		transaction.PatchResourceDoc(childItemID, patchOperations, nil)
-	}
-
-	err = iterator.GetError()
-	if err != nil {
-		logger.Error(err.Error())
-		return "", arm.NewInternalServerError()
-	}
-
-	return operationID, nil
-}
-
-func (f *Frontend) MarshalResource(ctx context.Context, resourceID *azcorearm.ResourceID, versionedInterface api.Version) ([]byte, *arm.CloudError) {
-	var responseBody []byte
-
-	logger := LoggerFromContext(ctx)
-
-	_, doc, err := f.dbClient.GetResourceDoc(ctx, resourceID)
-	if err != nil {
-		logger.Error(err.Error())
-		if database.IsResponseError(err, http.StatusNotFound) {
-			return nil, arm.NewResourceNotFoundError(resourceID)
-		} else {
-			return nil, arm.NewInternalServerError()
-		}
-	}
-
-	switch doc.InternalID.Kind() {
-	case arohcpv1alpha1.ClusterKind:
-		csCluster, err := f.clusterServiceClient.GetCluster(ctx, doc.InternalID)
-		if err != nil {
-			logger.Error(err.Error())
-			return nil, CSErrorToCloudError(err, resourceID)
-		}
-
-		responseBody, err = marshalCSCluster(csCluster, doc, versionedInterface)
-		if err != nil {
-			logger.Error(err.Error())
-			return nil, arm.NewInternalServerError()
-		}
-
-	case arohcpv1alpha1.NodePoolKind:
-		csNodePool, err := f.clusterServiceClient.GetNodePool(ctx, doc.InternalID)
-		if err != nil {
-			logger.Error(err.Error())
-			return nil, CSErrorToCloudError(err, resourceID)
-		}
-		responseBody, err = marshalCSNodePool(csNodePool, doc, versionedInterface)
-		if err != nil {
-			logger.Error(err.Error())
-			return nil, arm.NewInternalServerError()
-		}
-
-	default:
-		logger.Error(fmt.Sprintf("unsupported Cluster Service path: %s", doc.InternalID))
-		return nil, arm.NewInternalServerError()
-	}
-
-	return responseBody, nil
 }

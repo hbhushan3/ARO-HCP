@@ -2,28 +2,41 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.Management.Infra.Solo
 rolloutName: Management Cluster Rollout
 resourceGroups:
-- name: '{{ .global.rg  }}'
-  subscription: '{{ .global.subscription  }}'
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
-  - name: global-output
+  - name: output
     action: ARM
     template: templates/output-global.bicep
     parameters: configurations/output-global.tmpl.bicepparam
     deploymentLevel: ResourceGroup
     outputOnly: true
-- name: '{{ .regionRG  }}'
-  subscription: '{{ .svc.subscription  }}'
+- name: regional
+  resourceGroup: '{{ .regionRG }}'
+  subscription: '{{ .svc.subscription.key }}'
   steps:
-  - name: region-output
+  - name: output
     action: ARM
     template: templates/output-region.bicep
     parameters: configurations/output-region.tmpl.bicepparam
     deploymentLevel: ResourceGroup
     outputOnly: true
-- name: '{{ .mgmt.rg  }}'
-  subscription: '{{ .mgmt.subscription  }}'
+- name: kusto
+  resourceGroup: '{{ .kusto.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
-  - name: mgmt-infra
+  - name: output
+    action: ARM
+    template: templates/kusto-lookup.bicep
+    parameters: configurations/kusto-lookup.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: management
+  resourceGroup: '{{ .mgmt.rg }}'
+  subscription: '{{ .mgmt.subscription.key }}'
+  steps:
+  - name: infra
     action: ARM
     template: templates/mgmt-infra.bicep
     parameters: configurations/mgmt-infra.tmpl.bicepparam
@@ -32,12 +45,8 @@ resourceGroups:
     - name: clusterServiceMIResourceId
       # we don't need to grant KV permissions to CS as there is no CS in the MC solo deployment
       value: "-"
-    - name: logAnalyticsWorkspaceId
-      input:
-        step: region-output
-        name: logAnalyticsWorkspaceId
   # Build the MC
-  - name: mgmt-cluster
+  - name: cluster
     action: ARM
     template: templates/mgmt-cluster.bicep
     parameters: configurations/mgmt-cluster.tmpl.bicepparam
@@ -45,49 +54,58 @@ resourceGroups:
     variables:
     - name: ocpAcrResourceId
       input:
-        step: global-output
+        resourceGroup: global
+        step: output
         name: ocpAcrResourceId
     - name: svcAcrResourceId
       input:
-        step: global-output
+        resourceGroup: global
+        step: output
         name: svcAcrResourceId
     - name: azureMonitoringWorkspaceId
       input:
-        step: region-output
+        resourceGroup: regional
+        step: output
         name: azureMonitoringWorkspaceId
     - name: maestroEventGridNamespaceId
       input:
-        step: region-output
+        resourceGroup: regional
+        step: output
         name: maestroEventGridNamespaceId
-    - name: logAnalyticsWorkspaceId
-      input:
-        step: region-output
-        name: logAnalyticsWorkspaceId
     dependsOn:
-    - mgmt-infra
-    - region-output
-    - global-output
+    - resourceGroup: management
+      step: infra
   # Install ACRpull
   - name: acrpull
-    aksCluster: '{{ .mgmt.aks.name  }}'
-    action: Shell
-    command: make -C ../acrpull deploy
-    dryRun:
-      variables:
-      - name: DRY_RUN
-        value: "true"
-    variables:
-    - name: ACRPULL_DIGEST
-      configRef: acrPull.image.digest
-    - name: ACRPULL_REPO
-      configRef: acrPull.image.repository
-    - name: ACRPULL_REGISTRY
-      configRef: acrPull.image.registry
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: acrpull
+    releaseNamespace: acrpull
+    chartDir: ./../acrpull/deploy
+    valuesFile: ./../acrpull/deploy/values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: output
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
     dependsOn:
-    - mgmt-cluster
+    - resourceGroup: management
+      step: cluster
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m
   # Install cluster patches
-  - name: mgmt-fixes
-    aksCluster: '{{ .mgmt.aks.name  }}'
+  - name: fixes
+    aksCluster: '{{ .mgmt.aks.name }}'
     action: Shell
     command: make -C ../mgmt-fixes deploy
     dryRun:
@@ -98,4 +116,5 @@ resourceGroups:
     - name: APPLY_KUBELET_FIXES
       configRef: mgmt.applyKubeletFixes
     dependsOn:
-    - mgmt-cluster
+    - resourceGroup: management
+      step: cluster

@@ -2,21 +2,132 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.ACM
 rolloutName: ACM Rollout
 resourceGroups:
-- name: '{{ .mgmt.rg  }}'
-  subscription: '{{ .mgmt.subscription  }}'
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
-  - name: deploy
-    aksCluster: '{{ .mgmt.aks.name  }}'
-    action: Shell
-    command: make deploy
-    dryRun:
-      variables:
-      - name: DRY_RUN
-        value: "true"
-    variables:
-    - name: ARO_HCP_IMAGE_ACR
-      configRef: acr.svc.name
-    - name: MCE_PAUSE_RECONCILIATION
-      configRef: acm.mce.pauseReconciliation
-    shellIdentity:
-      configRef: aroDevopsMsiId
+  - name: output
+    action: ARM
+    template: templates/output-global.bicep
+    parameters: ./../dev-infrastructure/configurations/output-global.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: kusto
+  resourceGroup: '{{ .kusto.rg }}'
+  subscription: '{{ .global.subscription.key }}'
+  steps:
+  - name: kusto-lookup
+    action: ARM
+    template: ../dev-infrastructure/templates/kusto-lookup.bicep
+    parameters: ../dev-infrastructure/configurations/kusto-lookup.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: management
+  resourceGroup: '{{ .mgmt.rg }}'
+  subscription: '{{ .mgmt.subscription.key }}'
+  steps:
+  - name: deploy-mce-crds
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: 'mce-crds'
+    releaseNamespace: 'multicluster-engine'
+    chartDir: ./deploy/helm/multicluster-engine-crds
+    valuesFile: multicluster-engine-crds.values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m
+  - name: deploy-mce
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: 'mce'
+    releaseNamespace: 'multicluster-engine'
+    chartDir: ./deploy/helm/multicluster-engine
+    valuesFile: multicluster-engine.values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
+    dependsOn:
+    - resourceGroup: management
+      step: deploy-mce-crds
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m
+  - name: deploy-mce-config
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: 'mce-config'
+    releaseNamespace: 'multicluster-engine'
+    chartDir: ./deploy/helm/multicluster-engine-config
+    valuesFile: multicluster-engine-config.values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
+    dependsOn:
+    - resourceGroup: management
+      step: deploy-mce
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m
+  - name: deploy-policies
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: 'policy'
+    releaseNamespace: 'open-cluster-management-policies'
+    chartDir: ./deploy/helm/policies
+    valuesFile: policies.values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
+    dependsOn:
+    - resourceGroup: management
+      step: deploy-mce-config
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m

@@ -18,6 +18,7 @@ param roles = [
       'Microsoft.Network/publicIPAddresses/join/action'
       'Microsoft.Network/publicIPAddresses/read'
       'Microsoft.Network/publicIPAddresses/write'
+      'Microsoft.Network/publicIPAddresses/delete'
       'Microsoft.Network/virtualNetworks/subnets/join/action'
       'Microsoft.Network/virtualNetworks/subnets/read'
       'Microsoft.Network/publicIPPrefixes/join/action'
@@ -163,6 +164,7 @@ param roles = [
       'Microsoft.Network/networkInterfaces/read'
       'Microsoft.Network/networkInterfaces/write'
       'Microsoft.Network/virtualNetworks/subnets/join/action'
+      'Microsoft.Compute/diskEncryptionSets/read'
     ]
     notActions: []
     dataActions: []
@@ -199,3 +201,5 @@ param roles = [
     notDataActions: []
   }
 ]
+
+param e2eTestSubscription = ''

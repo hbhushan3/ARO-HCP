@@ -4,6 +4,8 @@ import {
   determineZoneRedundancyForRegion
   getLocationAvailabilityZonesCSV
 } from '../modules/common.bicep'
+import * as res from '../modules/resource.bicep'
+import * as mi from '../modules/managed-identities.bicep'
 
 @description('Azure Region Location')
 param location string = resourceGroup().location
@@ -15,6 +17,9 @@ var locationAvailabilityZoneList = csvToArray(locationAvailabilityZones)
 @description('AKS cluster name')
 param aksClusterName string
 
+@description('Name of the system agent pool')
+param systemAgentPoolName string
+
 @description('Minimum node count for system agent pool')
 param systemAgentMinCount int
 
@@ -24,17 +29,26 @@ param systemAgentMaxCount int
 @description('VM instance type for the system nodes')
 param systemAgentVMSize string
 
+@description('Zones to use for the system nodes')
+param systemAgentPoolZones string
+
+@description('Zone redundant mode for the system nodes')
+param systemZoneRedundantMode string
+
 @description('Disk size for the AKS system nodes')
 param aksSystemOsDiskSizeGB int
 
 @description('Disk size for the AKS user nodes')
-param aksUserOsDiskSizeGB int
+param userOsDiskSizeGB int
 
 @description('Network dataplane plugin for the AKS cluster')
 param aksNetworkDataplane string
 
 @description('Network policy plugin for the AKS cluster')
 param aksNetworkPolicy string
+
+@description('Name of the user agent pool')
+param userAgentPoolName string
 
 @description('Min replicas for the worker nodes')
 param userAgentMinCount int
@@ -45,8 +59,17 @@ param userAgentMaxCount int
 @description('VM instance type for the worker nodes')
 param userAgentVMSize string
 
-@description('Number of availability zones to use for the AKS clusters user agent pool')
-param userAgentPoolAZCount int
+@description('Number of pools to create for user nodes')
+param userAgentPoolCount int
+
+@description('Zones to use for the user nodes')
+param userAgentPoolZones string
+
+@description('Zone redundant mode for the user nodes')
+param userZoneRedundantMode string
+
+@description('Name of the infra agent pool')
+param infraAgentPoolName string
 
 @description('Min replicas for the infra worker nodes')
 param infraAgentMinCount int
@@ -57,11 +80,17 @@ param infraAgentMaxCount int
 @description('VM instance type for the infra worker nodes')
 param infraAgentVMSize string
 
-@description('Number of availability zones to use for the AKS clusters infra user agent pool')
-param infraAgentPoolAZCount int
+@description('Number of pools to create for infra nodes')
+param infraAgentPoolCount int
+
+@description('Zones to use for the infra nodes')
+param infraAgentPoolZones string
 
 @description('Disk size for the AKS infra nodes')
-param aksInfraOsDiskSizeGB int
+param infraOsDiskSizeGB int
+
+@description('Zone redundant mode for the infra nodes')
+param infraZoneRedundantMode string
 
 @description('The resource ID of the OCP ACR')
 param ocpAcrResourceId string
@@ -91,6 +120,12 @@ param istioVersions string
 @maxLength(24)
 param aksKeyVaultName string
 
+@description('The tag key for the AKS keyvault')
+param aksKeyVaultTagName string
+
+@description('The tag value for the AKS keyvault')
+param aksKeyVaultTagValue string
+
 @description('Manage soft delete setting for AKS etcd key-value store')
 param aksEtcdKVEnableSoftDelete bool = true
 
@@ -102,6 +137,12 @@ param istioIngressGatewayIPAddressName string = ''
 
 @description('IPTags to be set on the Istio Ingress Gateway IP address in the format of ipTagType:tag,ipTagType:tag')
 param istioIngressGatewayIPAddressIPTags string = ''
+
+@description('Admin API Istio Ingress Gateway IP Address Name')
+param opsIngressGatewayIPAddressName string = ''
+
+@description('IPTags to be set on the Admin API Istio Ingress Gateway IP address in the format of ipTagType:tag,ipTagType:tag')
+param opsIngressGatewayIPAddressTags string = ''
 
 // TODO: When the work around workload identity for the RP is finalized, change this to true
 @description('disableLocalAuth for the ARO HCP RP CosmosDB')
@@ -137,12 +178,27 @@ param csPostgresDeploy bool
 @description('The zone redundant mode of the Maestro Postgres Database')
 param csPostgresZoneRedundantMode string
 
+@description('The number of days to retain backups for the CS Postgres server')
+param csPostgresBackupRetentionDays int
+
+@description('Enable geo-redundant backups for the CS Postgres server')
+param csPostgresGeoRedundantBackup bool
+
 @description('The name of the Postgres server for CS')
 @maxLength(60)
 param csPostgresServerName string
 
+@description('The name of the CS Postgres database')
+param csPostgresDatabaseName string
+
 @description('The minimum TLS version for the Postgres server for CS')
 param csPostgresServerMinTLSVersion string
+
+@description('The version of the Postgres server for CS')
+param csPostgresServerVersion string
+
+@description('The size of the Postgres server for CS')
+param csPostgresServerStorageSizeGB int
 
 @description('If true, make the CS Postgres instance private')
 param clusterServicePostgresPrivate bool = true
@@ -152,6 +208,12 @@ param deployMaestroPostgres bool = true
 
 @description('The zone redundant mode of the Maestro Postgres Database')
 param maestroPostgresZoneRedundantMode string
+
+@description('The number of days to retain backups for the Maestro Postgres server')
+param maestroPostgresBackupRetentionDays int
+
+@description('Enable geo-redundant backups for the Maestro Postgres server')
+param maestroPostgresGeoRedundantBackup bool
 
 @description('If true, make the Maestro Postgres instance private')
 param maestroPostgresPrivate bool = true
@@ -193,11 +255,41 @@ param serviceKeyVaultResourceGroup string = resourceGroup().name
 @description('OIDC Storage Account name')
 param oidcStorageAccountName string
 
+@description('The location of the OIDC storage account private link')
+param oidcStoragePrivateLinkLocation string
+
+@description('Whether the OIDC storage account is public or private. If private, it can only be accessed via Azure Front Door')
+param oidcStorageAccountPublic bool
+
 @description('The zone redundant mode of the OIDC storage account')
 param oidcZoneRedundantMode string
 
+@description('The name of the global Azure Front Door profile fronting the OIDC storage account')
+param azureFrontDoorResourceId string
+
+@description('The name of the global Azure Front Door parent DNS zone')
+param azureFrontDoorParentDnsZoneName string
+
+@description('The regional subdomain for the Azure Front Door')
+param azureFrontDoorRegionalSubdomain string
+
+@description('The name of the Azure Front Door global Key Vault')
+param azureFrontDoorKeyVaultName string
+
+@description('The tag key for the Azure Front Door Key Vault')
+param azureFrontDoorKeyTagKey string
+
+@description('The tag value for the Azure Front Door Key Vault')
+param azureFrontDoorKeyTagValue string
+
+@description('Whether to use managed certificates for the Azure Front Door')
+param azureFrontDoorUseManagedCertificates bool
+
+@description('Whether to manage the Azure Front Door integration with the OIDC storage account')
+param azureFrontDoorManage bool
+
 @description('MSI that will be used to run the deploymentScript')
-param aroDevopsMsiId string
+param globalMSIId string
 
 @description('The parent SVC DNS zone name')
 param svcDNSZoneName string
@@ -214,6 +306,24 @@ param frontendIngressCertName string
 @description('Frontend Ingress Certificate Issuer')
 param frontendIngressCertIssuer string
 
+@description('The name of the frontend managed identity')
+param frontendMIName string
+
+@description('The namespace of the frontend managed identity')
+param frontendNamespace string
+
+@description('The service account name of the frontend managed identity')
+param frontendServiceAccountName string
+
+@description('The name of the backend managed identity')
+param backendMIName string
+
+@description('The namespace of the backend managed identity')
+param backendNamespace string
+
+@description('The service account name of the backend managed identity')
+param backendServiceAccountName string
+
 @description('The name of the FPA certificate in the SVC keyvault')
 param fpaCertificateName string
 
@@ -226,6 +336,9 @@ param manageFpaCertificate bool
 @description('The service tag for Geneva Actions')
 param genevaActionsServiceTag string
 
+@description('The service tag for SRE access')
+param sreServiceTag string
+
 @description('The Azure Resource ID of the Azure Monitor Workspace (stores prometheus metrics)')
 param azureMonitoringWorkspaceId string
 
@@ -237,6 +350,15 @@ param csNamespace string
 
 @description('The service account name of the CS managed identity')
 param csServiceAccountName string
+
+@description('The name of the MSI refresher managed identity')
+param msiRefresherMIName string
+
+@description('The namespace of the MSI refresher managed identity')
+param msiRefresherNamespace string
+
+@description('The service account name of the MSI refresher managed identity')
+param msiRefresherServiceAccountName string
 
 // logs
 @description('The namespace of the logs')
@@ -257,12 +379,175 @@ param svcNSPAccessMode string
 @description('Access mode for this NSP')
 param serviceKeyVaultAsignNSP bool = true
 
-// Log Analytics Workspace ID will be passed from region pipeline if enabled in config
-param logAnalyticsWorkspaceId string = ''
+@description('Domain used for creation of geneva auth certificates')
+param genevaCertificateDomain string
+
+@description('Issuer of certificate for Geneva Authentication')
+param genevaCertificateIssuer string = 'Self'
+
+@description('Name of certificate in Keyvault and hostname used in SAN')
+param genevaRpLogsName string
+
+@description('Should geneva certificates be managed')
+param genevaManageCertificates bool
+
+@description('The name of the Admin API managed identity')
+param adminApiMIName string
+
+@description('The namespace of the Admin API managed identity')
+param adminApiNamespace string
+
+@description('The service account name of the Admin API managed identity')
+param adminApiServiceAccountName string
+
+@description('The name of the Admin API certificate')
+param adminApiIngressCertName string
+
+@description('The issuer of the Admin API certificate')
+param adminApiIngressCertIssuer string
+
+@description('The cluster tag value for the owning team')
+param owningTeamTagValue string
+
+@description('CoscmosDB autoscaling parameters')
+param resourceContainerMaxScale int
+param billingContainerMaxScale int
+param locksContainerMaxScale int
+
+@description('The name of the Exporter managed identity')
+param exporterMIName string
+
+@description('The namespace of the Exporter managed identity')
+param exporterNamespace string
+
+@description('The service account name of the Exporter managed identity')
+param exporterServiceAccountName string
+
+@description('Event Hub name for AKS audit logs')
+param auditLogsEventHubName string
+
+@description('Resource ID of the event hub authorization rule for AKS audit logs')
+param auditLogsEventHubAuthRuleId string
+
+@description('The name of the Session Gate managed identity')
+param sessiongateMIName string
+
+@description('The namespace of the Session Gate managed identity')
+param sessiongateNamespace string
+
+@description('The service account name of the Session Gate managed identity')
+param sessiongateServiceAccountName string
+
+@description('The name of the Session Gate ingress certificate')
+param sessiongateIngressCertName string
+
+@description('The issuer of the Session Gate ingress certificate')
+param sessiongateIngressCertIssuer string
 
 resource serviceKeyVault 'Microsoft.KeyVault/vaults@2024-04-01-preview' existing = {
   name: serviceKeyVaultName
   scope: resourceGroup(serviceKeyVaultResourceGroup)
+}
+
+//
+//   M A N A G E D   I D E N T I T I E S
+//
+
+var workloadIdentities = items({
+  frontend_wi: {
+    uamiName: frontendMIName
+    namespace: frontendNamespace
+    serviceAccountName: frontendServiceAccountName
+  }
+  backend_wi: {
+    uamiName: backendMIName
+    namespace: backendNamespace
+    serviceAccountName: backendServiceAccountName
+  }
+  billing_wi: {
+    uamiName: 'aro-billing'
+    namespace: 'billing'
+    serviceAccountName: 'aro-billing'
+  }
+  maestro_wi: {
+    uamiName: maestroMIName
+    namespace: maestroNamespace
+    serviceAccountName: maestroServiceAccountName
+  }
+  cs_wi: {
+    uamiName: csMIName
+    namespace: csNamespace
+    serviceAccountName: csServiceAccountName
+  }
+  logs_wi: {
+    uamiName: logsMSI
+    namespace: logsNamespace
+    serviceAccountName: logsServiceAccount
+  }
+  prom_wi: {
+    uamiName: 'prometheus'
+    namespace: 'prometheus'
+    serviceAccountName: 'prometheus'
+  }
+  msi_refresher_wi: {
+    uamiName: msiRefresherMIName
+    namespace: msiRefresherNamespace
+    serviceAccountName: msiRefresherServiceAccountName
+  }
+  admin_api_wi: {
+    uamiName: adminApiMIName
+    namespace: adminApiNamespace
+    serviceAccountName: adminApiServiceAccountName
+  }
+  sessiongate_wi: {
+    uamiName: sessiongateMIName
+    namespace: sessiongateNamespace
+    serviceAccountName: sessiongateServiceAccountName
+  }
+  exporter_wi: {
+    uamiName: exporterMIName
+    namespace: exporterNamespace
+    serviceAccountName: exporterServiceAccountName
+  }
+})
+
+module managedIdentities '../modules/managed-identities.bicep' = {
+  name: 'managed-identities'
+  params: {
+    location: location
+    manageIdentityNames: [for wi in workloadIdentities: wi.value.uamiName]
+  }
+}
+
+//
+//   A K S
+//
+
+resource aksClusterUserDefinedManagedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${aksClusterName}-msi'
+  location: location
+}
+
+module istioIngressGatewayIPAddress '../modules/network/publicipaddress.bicep' = {
+  name: istioIngressGatewayIPAddressName
+  scope: resourceGroup(regionalResourceGroup)
+  params: {
+    name: istioIngressGatewayIPAddressName
+    ipTags: istioIngressGatewayIPAddressIPTags
+    location: location
+    zones: locationAvailabilityZoneList
+    // Role Assignment needed for the public IP address to be used on the Load Balancer
+    roleAssignmentProperties: {
+      principalId: aksClusterUserDefinedManagedIdentity.properties.principalId
+      principalType: 'ServicePrincipal'
+      // Network Contributor Role
+      // https://www.azadvertizer.net/azrolesadvertizer/4d97b98b-1d4f-4787-a291-c67834d212e7.html
+      roleDefinitionId: subscriptionResourceId(
+        'Microsoft.Authorization/roleDefinitions/',
+        '4d97b98b-1d4f-4787-a291-c67834d212e7'
+      )
+    }
+  }
 }
 
 resource svcClusterNSG 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
@@ -274,7 +559,7 @@ resource svcClusterNSG 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
         name: 'rp-in-arm'
         properties: {
           access: 'Allow'
-          destinationAddressPrefix: '*'
+          destinationAddressPrefix: istioIngressGatewayIPAddress.outputs.ipAddress
           destinationPortRange: '443'
           direction: 'Inbound'
           priority: 120
@@ -287,7 +572,9 @@ resource svcClusterNSG 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
         name: 'admin-in-geneva'
         properties: {
           access: 'Allow'
-          destinationAddressPrefix: '*'
+          destinationAddressPrefix: istioIngressGatewayIPAddress.outputs.ipAddress
+          // TODO: ops-ingress phase 3: switch to ops IP
+          // destinationAddressPrefix: opsIngressGatewayIPAddress.outputs.ipAddress
           destinationPortRange: '443'
           direction: 'Inbound'
           priority: 130
@@ -296,17 +583,57 @@ resource svcClusterNSG 'Microsoft.Network/networkSecurityGroups@2023-11-01' = {
           sourcePortRange: '*'
         }
       }
+      {
+        name: 'sre-in-ops'
+        properties: {
+          access: 'Allow'
+          destinationAddressPrefix: opsIngressGatewayIPAddress.outputs.ipAddress
+          destinationPortRange: '443'
+          direction: 'Inbound'
+          priority: 140
+          protocol: 'Tcp'
+          sourceAddressPrefix: sreServiceTag != '' ? sreServiceTag : '*'
+          sourcePortRange: '*'
+        }
+      }
     ]
   }
 }
 
+var vnetName = 'aks-net'
+var nodeSubnetName = 'ClusterSubnet-001'
+
+module vnetCreation '../modules/network/vnet.bicep' = {
+  name: 'vnet-${vnetName}-creation'
+  params: {
+    location: location
+    vnetName: vnetName
+    vnetAddressPrefix: vnetAddressPrefix
+    enableSwift: false
+    deploymentMsiId: globalMSIId
+  }
+}
+
+module nodeSubnetCreation '../modules/network/aks-node-subnet.bicep' = {
+  name: 'subnet-${nodeSubnetName}-creation'
+  params: {
+    vnetName: vnetName
+    subnetName: nodeSubnetName
+    subnetNSGId: svcClusterNSG.id
+    subnetPrefix: subnetPrefix
+  }
+  dependsOn: [
+    vnetCreation
+  ]
+}
+
 module svcCluster '../modules/aks-cluster-base.bicep' = {
-  name: 'cluster'
+  name: 'cluster-${uniqueString(resourceGroup().name)}'
   scope: resourceGroup()
   params: {
     location: location
-    locationAvailabilityZones: locationAvailabilityZoneList
-    regionalResourceGroup: regionalResourceGroup
+    ipResourceGroup: regionalResourceGroup
+    ipZones: locationAvailabilityZoneList
     aksClusterName: aksClusterName
     aksNodeResourceGroupName: aksNodeResourceGroupName
     aksEtcdKVEnableSoftDelete: aksEtcdKVEnableSoftDelete
@@ -314,91 +641,81 @@ module svcCluster '../modules/aks-cluster-base.bicep' = {
     kubernetesVersion: kubernetesVersion
     deployIstio: true
     istioVersions: split(istioVersions, ',')
-    istioIngressGatewayIPAddressName: istioIngressGatewayIPAddressName
-    istioIngressGatewayIPAddressIPTags: istioIngressGatewayIPAddressIPTags
-    vnetAddressPrefix: vnetAddressPrefix
-    nodeSubnetNSGId: svcClusterNSG.id
-    subnetPrefix: subnetPrefix
+    vnetName: vnetName
+    nodeSubnetId: nodeSubnetCreation.outputs.subnetId
     podSubnetPrefix: podSubnetPrefix
     clusterType: 'svc-cluster'
-    systemOsDiskSizeGB: aksSystemOsDiskSizeGB
-    userOsDiskSizeGB: aksUserOsDiskSizeGB
+    userOsDiskSizeGB: userOsDiskSizeGB
+    userAgentPoolName: userAgentPoolName
     userAgentMinCount: userAgentMinCount
     userAgentMaxCount: userAgentMaxCount
     userAgentVMSize: userAgentVMSize
-    userAgentPoolAZCount: userAgentPoolAZCount
+    userAgentPoolCount: userAgentPoolCount
+    userAgentPoolZones: length(csvToArray(userAgentPoolZones)) > 0
+      ? csvToArray(userAgentPoolZones)
+      : locationAvailabilityZoneList
+    userZoneRedundantMode: userZoneRedundantMode
+    infraAgentPoolName: infraAgentPoolName
     infraAgentMinCount: infraAgentMinCount
     infraAgentMaxCount: infraAgentMaxCount
     infraAgentVMSize: infraAgentVMSize
-    infraAgentPoolAZCount: infraAgentPoolAZCount
-    infraOsDiskSizeGB: aksInfraOsDiskSizeGB
+    infraAgentPoolCount: infraAgentPoolCount
+    infraAgentPoolZones: length(csvToArray(infraAgentPoolZones)) > 0
+      ? csvToArray(infraAgentPoolZones)
+      : locationAvailabilityZoneList
+    infraOsDiskSizeGB: infraOsDiskSizeGB
+    infraZoneRedundantMode: infraZoneRedundantMode
+    systemOsDiskSizeGB: aksSystemOsDiskSizeGB
+    systemAgentPoolName: systemAgentPoolName
     systemAgentMinCount: systemAgentMinCount
     systemAgentMaxCount: systemAgentMaxCount
     systemAgentVMSize: systemAgentVMSize
+    systemAgentPoolZones: length(csvToArray(systemAgentPoolZones)) > 0
+      ? csvToArray(systemAgentPoolZones)
+      : locationAvailabilityZoneList
+    systemZoneRedundantMode: systemZoneRedundantMode
     networkDataplane: aksNetworkDataplane
     networkPolicy: aksNetworkPolicy
-    workloadIdentities: items({
-      frontend_wi: {
-        uamiName: 'frontend'
-        namespace: 'aro-hcp'
-        serviceAccountName: 'frontend'
-      }
-      backend_wi: {
-        uamiName: 'backend'
-        namespace: 'aro-hcp'
-        serviceAccountName: 'backend'
-      }
-      backplane_wi: {
-        uamiName: 'backplane-api'
-        namespace: 'aro-hcp'
-        serviceAccountName: 'backplane-api'
-      }
-      maestro_wi: {
-        uamiName: maestroMIName
-        namespace: maestroNamespace
-        serviceAccountName: maestroServiceAccountName
-      }
-      cs_wi: {
-        uamiName: csMIName
-        namespace: csNamespace
-        serviceAccountName: csServiceAccountName
-      }
-      image_sync_wi: {
-        uamiName: 'image-sync'
-        namespace: 'image-sync'
-        serviceAccountName: 'image-sync'
-      }
-      logs_wi: {
-        uamiName: logsMSI
-        namespace: logsNamespace
-        serviceAccountName: logsServiceAccount
-      }
-      prom_wi: {
-        uamiName: 'prometheus'
-        namespace: 'prometheus'
-        serviceAccountName: 'prometheus'
-      }
-    })
+    workloadIdentities: workloadIdentities
     aksKeyVaultName: aksKeyVaultName
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    aksKeyVaultTagName: aksKeyVaultTagName
+    aksKeyVaultTagValue: aksKeyVaultTagValue
     pullAcrResourceIds: [svcAcrResourceId]
-    deploymentMsiId: aroDevopsMsiId
-    enableSwiftV2: false
+    deploymentMsiId: globalMSIId
+    enableSwiftV2Nodepools: false
+    owningTeamTagValue: owningTeamTagValue
+    aksClusterUserDefinedManagedIdentityName: aksClusterUserDefinedManagedIdentity.name
   }
+  dependsOn: [
+    managedIdentities
+  ]
 }
 
 output aksClusterName string = svcCluster.outputs.aksClusterName
 
 //
-// L O G S
+//   O P S   I N G R E S S   P U B L I C   I P
 //
 
-// NOTE: This is only enabled for non-prod environments
-module logsCollection '../modules/logs/collection.bicep' = if (logAnalyticsWorkspaceId != '') {
-  name: 'logs-collection'
+module opsIngressGatewayIPAddress '../modules/network/publicipaddress.bicep' = if (!empty(opsIngressGatewayIPAddressName)) {
+  name: opsIngressGatewayIPAddressName
+  scope: resourceGroup(regionalResourceGroup)
   params: {
-    aksClusterName: svcCluster.outputs.aksClusterName
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    name: opsIngressGatewayIPAddressName
+    ipTags: opsIngressGatewayIPAddressTags
+    location: location
+    zones: length(locationAvailabilityZoneList) > 0 ? locationAvailabilityZoneList : null
+    // Role Assignment needed for the public IP address to be used on the Load Balancer
+    roleAssignmentProperties: {
+      principalId: aksClusterUserDefinedManagedIdentity.properties.principalId
+      principalType: 'ServicePrincipal'
+      // Network Contributor Role - needed for the AKS managed identity to use the public IP on the LoadBalancer
+      // https://www.azadvertizer.net/azrolesadvertizer/4d97b98b-1d4f-4787-a291-c67834d212e7.html
+      roleDefinitionId: subscriptionResourceId(
+        'Microsoft.Authorization/roleDefinitions/',
+        '4d97b98b-1d4f-4787-a291-c67834d212e7'
+      )
+    }
   }
 }
 
@@ -412,12 +729,16 @@ module dataCollection '../modules/metrics/datacollection.bicep' = {
     azureMonitorWorkspaceLocation: location
     azureMonitoringWorkspaceId: azureMonitoringWorkspaceId
     aksClusterName: aksClusterName
-    prometheusPrincipalId: filter(svcCluster.outputs.userAssignedIdentities, id => id.uamiName == 'prometheus')[0].uamiPrincipalID
+    prometheusPrincipalId: mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, 'prometheus').uamiPrincipalID
   }
+  dependsOn: [
+    svcCluster
+  ]
 }
 
-var frontendMI = filter(svcCluster.outputs.userAssignedIdentities, id => id.uamiName == 'frontend')[0]
-var backendMI = filter(svcCluster.outputs.userAssignedIdentities, id => id.uamiName == 'backend')[0]
+var frontendMI = mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, frontendMIName)
+var backendMI = mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, backendMIName)
+var adminApiMI = mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, adminApiMIName)
 
 module rpCosmosDb '../modules/rp-cosmos.bicep' = if (deployFrontendCosmos) {
   name: 'rp_cosmos_db'
@@ -427,17 +748,20 @@ module rpCosmosDb '../modules/rp-cosmos.bicep' = if (deployFrontendCosmos) {
     location: location
     zoneRedundant: determineZoneRedundancy(locationAvailabilityZoneList, rpCosmosZoneRedundantMode)
     disableLocalAuth: disableLocalAuth
-    userAssignedMIs: [frontendMI, backendMI]
+    userAssignedMIs: [frontendMI, backendMI, adminApiMI]
     private: rpCosmosDbPrivate
+    resourceContainerMaxScale: resourceContainerMaxScale
+    billingContainerMaxScale: billingContainerMaxScale
+    locksContainerMaxScale: locksContainerMaxScale
   }
 }
 
-module rpCosmosdbPrivateEndpoint '../modules/private-endpoint.bicep' = {
-  name: '${deployment().name}-rp-pe'
+module rpCosmosdbPrivateEndpoint '../modules/private-endpoint.bicep' = if (rpCosmosDbPrivate) {
+  name: 'rp-pe-${uniqueString(deployment().name)}'
   params: {
     location: location
-    subnetIds: [svcCluster.outputs.aksNodeSubnetId]
-    vnetId: svcCluster.outputs.aksVnetId
+    subnetIds: [nodeSubnetCreation.outputs.subnetId]
+    vnetId: vnetCreation.outputs.vnetId
     privateLinkServiceId: rpCosmosDb.outputs.cosmosDBAccountId
     serviceType: 'cosmosdb'
     groupId: 'Sql'
@@ -462,7 +786,7 @@ module maestroServer '../modules/maestro/maestro-server.bicep' = {
     mqttClientName: maestroServerMqttClientName
     certKeyVaultName: serviceKeyVaultName
     certKeyVaultResourceGroup: serviceKeyVaultResourceGroup
-    keyVaultOfficerManagedIdentityName: aroDevopsMsiId
+    keyVaultOfficerManagedIdentityName: globalMSIId
     maestroCertificateDomain: effectiveMaestroCertDomain
     maestroCertificateIssuer: maestroCertIssuer
     deployPostgres: deployMaestroPostgres
@@ -473,18 +797,19 @@ module maestroServer '../modules/maestro/maestro-server.bicep' = {
     postgresZoneRedundantMode: determineZoneRedundancyForRegion(location, maestroPostgresZoneRedundantMode)
       ? 'ZoneRedundant'
       : 'SameZone'
-    privateEndpointSubnetId: svcCluster.outputs.aksNodeSubnetId
-    privateEndpointVnetId: svcCluster.outputs.aksVnetId
+    postgresBackupRetentionDays: maestroPostgresBackupRetentionDays
+    postgresGeoRedundantBackup: maestroPostgresGeoRedundantBackup
+    privateEndpointSubnetId: nodeSubnetCreation.outputs.subnetId
+    privateEndpointVnetId: vnetCreation.outputs.vnetId
     privateEndpointResourceGroup: resourceGroup().name
     maestroDatabaseName: maestroPostgresDatabaseName
     postgresServerPrivate: maestroPostgresPrivate
-    postgresAdministrationManagedIdentityId: aroDevopsMsiId
-    maestroServerManagedIdentityPrincipalId: filter(
-      svcCluster.outputs.userAssignedIdentities,
-      id => id.uamiName == maestroMIName
-    )[0].uamiPrincipalID
+    postgresAdministrationManagedIdentityId: globalMSIId
+    maestroServerManagedIdentityPrincipalId: mi.getManagedIdentityByName(
+      managedIdentities.outputs.managedIdentities,
+      maestroMIName
+    ).uamiPrincipalID
     maestroServerManagedIdentityName: maestroMIName
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
   }
   dependsOn: [
     serviceKeyVault
@@ -492,51 +817,28 @@ module maestroServer '../modules/maestro/maestro-server.bicep' = {
 }
 
 //
-//   K E Y V A U L T S
-//
-
-var logsManagedIdentityPrincipalId = filter(svcCluster.outputs.userAssignedIdentities, id => id.uamiName == logsMSI)[0].uamiPrincipalID
-
-module logsServiceKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
-  name: guid(serviceKeyVaultName, logsMSI, 'certuser')
-  scope: resourceGroup(serviceKeyVaultResourceGroup)
-  params: {
-    keyVaultName: serviceKeyVaultName
-    roleName: 'Key Vault Certificate User'
-    managedIdentityPrincipalId: logsManagedIdentityPrincipalId
-  }
-}
-
-module serviceKeyVaultPrivateEndpoint '../modules/private-endpoint.bicep' = {
-  name: '${deployment().name}-svcs-kv-pe'
-  params: {
-    location: location
-    subnetIds: [svcCluster.outputs.aksNodeSubnetId]
-    vnetId: svcCluster.outputs.aksVnetId
-    privateLinkServiceId: serviceKeyVault.id
-    serviceType: 'keyvault'
-    groupId: 'vault'
-  }
-}
-
-//
 //   C L U S T E R   S E R V I C E
 //
 
-var csManagedIdentityPrincipalId = filter(svcCluster.outputs.userAssignedIdentities, id => id.uamiName == csMIName)[0].uamiPrincipalID
+var csManagedIdentityPrincipalId = mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, csMIName).uamiPrincipalID
 
 module cs '../modules/cluster-service.bicep' = {
   name: 'cluster-service'
   params: {
     postgresServerName: csPostgresServerName
     postgresServerMinTLSVersion: csPostgresServerMinTLSVersion
-    privateEndpointSubnetId: svcCluster.outputs.aksNodeSubnetId
-    privateEndpointVnetId: svcCluster.outputs.aksVnetId
+    postgresServerVersion: csPostgresServerVersion
+    postgresServerStorageSizeGB: csPostgresServerStorageSizeGB
+    csDatabaseName: csPostgresDatabaseName
+    privateEndpointSubnetId: nodeSubnetCreation.outputs.subnetId
+    privateEndpointVnetId: vnetCreation.outputs.vnetId
     privateEndpointResourceGroup: resourceGroup().name
     deployPostgres: csPostgresDeploy
     postgresZoneRedundantMode: determineZoneRedundancyForRegion(location, csPostgresZoneRedundantMode)
       ? 'ZoneRedundant'
       : 'SameZone'
+    postgresBackupRetentionDays: csPostgresBackupRetentionDays
+    postgresGeoRedundantBackup: csPostgresGeoRedundantBackup
     postgresServerPrivate: clusterServicePostgresPrivate
     clusterServiceManagedIdentityPrincipalId: csManagedIdentityPrincipalId
     clusterServiceManagedIdentityName: csMIName
@@ -545,31 +847,97 @@ module cs '../modules/cluster-service.bicep' = {
     regionalCXDNSZoneName: regionalCXDNSZoneName
     regionalResourceGroup: regionalResourceGroup
     ocpAcrResourceId: ocpAcrResourceId
-    postgresAdministrationManagedIdentityId: aroDevopsMsiId
+    postgresAdministrationManagedIdentityId: globalMSIId
   }
-  dependsOn: [
-    maestroServer
-  ]
+  dependsOn: csPostgresDeploy && deployMaestroPostgres ? [maestroServer] : []
 }
 
-// O I D C
+//
+//   S V C   K E Y V A U L T   A C C E S S
+//
 
-module oidc '../modules/oidc/main.bicep' = {
-  name: '${deployment().name}-oidc'
+module serviceKeyVaultSecretsUserAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: 'kv-sec-user-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
   params: {
+    keyVaultName: serviceKeyVaultName
+    roleName: 'Key Vault Secrets User'
+    managedIdentityPrincipalIds: [csManagedIdentityPrincipalId, backendMI.uamiPrincipalID, adminApiMI.uamiPrincipalID]
+  }
+}
+
+module serviceKeyVaultCertUserAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: 'kv-cert-user-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    roleName: 'Key Vault Certificate User'
+    managedIdentityPrincipalIds: [
+      mi.getManagedIdentityByName(managedIdentities.outputs.managedIdentities, logsMSI).uamiPrincipalID
+    ]
+  }
+}
+
+//
+//   D N S   A C C E S S
+//
+
+module cxDnsZoneContributor '../modules/dns/zone-contributor.bicep' = {
+  name: 'cs-dns-zone-contributor'
+  scope: resourceGroup(regionalResourceGroup)
+  params: {
+    zoneName: regionalCXDNSZoneName
+    zoneContributerManagedIdentityPrincipalIds: [csManagedIdentityPrincipalId, backendMI.uamiPrincipalID]
+  }
+}
+
+//
+//   O C P   A C R   P E R M I S S I O N S
+//
+
+var ocpAcrRef = res.acrRefFromId(ocpAcrResourceId)
+module acrManageTokenRole '../modules/acr/acr-permissions.bicep' = {
+  name: 'ocp-acr-manage-tokens-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(ocpAcrRef.resourceGroup.subscriptionId, ocpAcrRef.resourceGroup.name)
+  params: {
+    principalIds: [csManagedIdentityPrincipalId, backendMI.uamiPrincipalID]
+    grantManageTokenAccess: true
+    acrName: ocpAcrRef.name
+  }
+}
+
+//
+//   O I D C
+//
+
+var frontDoorRef = res.frontdoorProfileRefFromId(azureFrontDoorResourceId)
+
+module oidc '../modules/oidc/region/main.bicep' = {
+  name: 'oidc-storage'
+  scope: resourceGroup(regionalResourceGroup)
+  params: {
+    gblRgName: frontDoorRef.resourceGroup.name
+    gblSubscription: frontDoorRef.resourceGroup.subscriptionId
     location: location
-    regionalResourceGroup: regionalResourceGroup
+    zoneName: azureFrontDoorParentDnsZoneName
+    frontDoorProfileName: frontDoorRef.name
     storageAccountName: oidcStorageAccountName
-    rpMsiName: csMIName
+    customDomainName: azureFrontDoorRegionalSubdomain
+    routeName: azureFrontDoorRegionalSubdomain
+    originGroupName: azureFrontDoorRegionalSubdomain
+    originName: azureFrontDoorRegionalSubdomain
+    privateLinkLocation: oidcStoragePrivateLinkLocation
+    storageAccountAccessPrincipalIds: [csManagedIdentityPrincipalId, backendMI.uamiPrincipalID]
     skuName: determineZoneRedundancy(locationAvailabilityZoneList, oidcZoneRedundantMode)
       ? 'Standard_ZRS'
       : 'Standard_LRS'
-    msiId: aroDevopsMsiId
+    keyVaultName: azureFrontDoorKeyVaultName
+    useManagedCertificates: azureFrontDoorUseManagedCertificates
+    globalMSIId: globalMSIId
     deploymentScriptLocation: location
+    storageAccountBlobPublicAccess: oidcStorageAccountPublic
+    frontDoorManage: azureFrontDoorManage
   }
-  dependsOn: [
-    svcCluster
-  ]
 }
 
 //
@@ -586,11 +954,11 @@ module eventGrindPrivateEndpoint '../modules/private-endpoint.bicep' = {
   name: 'eventGridPrivateEndpoint'
   params: {
     location: location
-    subnetIds: [svcCluster.outputs.aksNodeSubnetId]
+    subnetIds: [nodeSubnetCreation.outputs.subnetId]
     privateLinkServiceId: eventGridNamespace.id
     serviceType: 'eventgrid'
     groupId: 'topicspace'
-    vnetId: svcCluster.outputs.aksVnetId
+    vnetId: vnetCreation.outputs.vnetId
   }
 }
 
@@ -608,7 +976,7 @@ module frontendIngressCert '../modules/keyvault/key-vault-cert.bicep' = {
     keyVaultName: serviceKeyVaultName
     subjectName: 'CN=${frontendDnsFQDN}'
     certName: frontendIngressCertName
-    keyVaultManagedIdentityId: aroDevopsMsiId
+    keyVaultManagedIdentityId: globalMSIId
     dnsNames: [
       frontendDnsFQDN
     ]
@@ -622,7 +990,7 @@ module frontendIngressCertCSIAccess '../modules/keyvault/keyvault-secret-access.
   params: {
     keyVaultName: serviceKeyVaultName
     roleName: 'Key Vault Secrets User'
-    managedIdentityPrincipalId: svcCluster.outputs.aksClusterKeyVaultSecretsProviderPrincipalId
+    managedIdentityPrincipalIds: [svcCluster.outputs.aksClusterKeyVaultSecretsProviderPrincipalId]
     secretName: frontendIngressCertName
   }
 }
@@ -633,7 +1001,96 @@ module frontendDNS '../modules/dns/a-record.bicep' = {
   params: {
     zoneName: regionalSvcDNSZoneName
     recordName: frontendDnsName
-    ipAddress: svcCluster.outputs.istioIngressGatewayIPAddress
+    ipAddress: istioIngressGatewayIPAddress.outputs.ipAddress
+    ttl: 300
+  }
+}
+
+//
+//   A D M I N   A P I
+//
+
+var adminApiDnsName = 'admin'
+var adminApiDnsFQDN = '${adminApiDnsName}.${regionalSvcDNSZoneName}'
+
+module adminApiCert '../modules/keyvault/key-vault-cert.bicep' = {
+  name: 'admin-api-cert-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    subjectName: 'CN=${adminApiDnsFQDN}'
+    certName: adminApiIngressCertName
+    keyVaultManagedIdentityId: globalMSIId
+    dnsNames: [
+      adminApiDnsFQDN
+    ]
+    issuerName: adminApiIngressCertIssuer
+  }
+}
+
+module adminApiIngressCertCSIAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: 'aksClusterKeyVaultSecretsProviderMI-${adminApiIngressCertName}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    roleName: 'Key Vault Secrets User'
+    managedIdentityPrincipalIds: [svcCluster.outputs.aksClusterKeyVaultSecretsProviderPrincipalId]
+    secretName: adminApiIngressCertName
+  }
+}
+
+// TODO: ops-ingress phase 3: move DNS to ops ingress when k8s gateway is deployed to prod
+module adminApiDNS '../modules/dns/a-record.bicep' = {
+  name: 'admin-api-dns'
+  scope: resourceGroup(regionalResourceGroup)
+  params: {
+    zoneName: regionalSvcDNSZoneName
+    recordName: adminApiDnsName
+    ipAddress: istioIngressGatewayIPAddress.outputs.ipAddress
+    ttl: 300
+  }
+}
+
+//
+//   S E S S I O N G A T E
+//
+
+var sessiongateDnsName = 'sessiongate'
+var sessiongateDnsFQDN = '${sessiongateDnsName}.${regionalSvcDNSZoneName}'
+
+module sessiongateCert '../modules/keyvault/key-vault-cert.bicep' = {
+  name: 'sessiongate-cert-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    subjectName: 'CN=${sessiongateDnsFQDN}'
+    certName: sessiongateIngressCertName
+    keyVaultManagedIdentityId: globalMSIId
+    dnsNames: [
+      sessiongateDnsFQDN
+    ]
+    issuerName: sessiongateIngressCertIssuer
+  }
+}
+
+module sessiongateIngressCertCSIAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: 'aksSPCRead-${sessiongateIngressCertName}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    roleName: 'Key Vault Secrets User'
+    managedIdentityPrincipalIds: [svcCluster.outputs.aksClusterKeyVaultSecretsProviderPrincipalId]
+    secretName: sessiongateIngressCertName
+  }
+}
+
+module sessiongateDNS '../modules/dns/a-record.bicep' = {
+  name: 'sessiongate-dns'
+  scope: resourceGroup(regionalResourceGroup)
+  params: {
+    zoneName: regionalSvcDNSZoneName
+    recordName: sessiongateDnsName
+    ipAddress: opsIngressGatewayIPAddress.outputs.ipAddress
     ttl: 300
   }
 }
@@ -651,11 +1108,29 @@ module fpaCertificate '../modules/keyvault/key-vault-cert.bicep' = if (manageFpa
     keyVaultName: serviceKeyVaultName
     subjectName: 'CN=${fpaCertificateSNI}'
     certName: fpaCertificateName
-    keyVaultManagedIdentityId: aroDevopsMsiId
+    keyVaultManagedIdentityId: globalMSIId
     dnsNames: [
       fpaCertificateSNI
     ]
     issuerName: fpaCertificateIssuer
+  }
+}
+
+//
+//   G E N E V A   C E R T I F I C A T E
+//
+
+module genevaRPCertificate '../modules/keyvault/key-vault-cert-with-access.bicep' = if (genevaManageCertificates) {
+  name: 'geneva-rp-certificate-${uniqueString(resourceGroup().name)}'
+  scope: resourceGroup(serviceKeyVaultResourceGroup)
+  params: {
+    keyVaultName: serviceKeyVaultName
+    kvCertOfficerManagedIdentityResourceId: globalMSIId
+    certDomain: genevaCertificateDomain
+    certificateIssuer: genevaCertificateIssuer
+    hostName: genevaRpLogsName
+    keyVaultCertificateName: genevaRpLogsName
+    certificateAccessManagedIdentityPrincipalId: svcCluster.outputs.aksClusterKeyVaultSecretsProviderPrincipalId
   }
 }
 
@@ -689,6 +1164,7 @@ module svcClusterNSPProfile '../modules/network/nsp-profile.bicep' = {
   }
   dependsOn: [
     svcNSP
+    rpCosmosdbPrivateEndpoint
   ]
 }
 
@@ -711,3 +1187,20 @@ module svcKVNSPProfile '../modules/network/nsp-profile.bicep' = if (serviceKeyVa
     svcNSP
   ]
 }
+
+//
+//  A K S   D I A G N O S T I C   S E T T I N G S
+//
+
+// jboll, needs to disable, cause stage deployment fails 
+// module diagnosticSetting '../modules/aks/diagnostic-setting.bicep' = if (auditLogsEventHubAuthRuleId != '') {
+//   name: 'aks-diagnostic-setting'
+//   dependsOn: [
+//     svcCluster
+//   ]
+//   params: {
+//     aksClusterName: aksClusterName
+//     auditLogsEventHubName: auditLogsEventHubName
+//     auditLogsEventHubAuthRuleId: auditLogsEventHubAuthRuleId
+//   }
+// }

@@ -15,6 +15,12 @@ param keyVaultPrivate bool
 @description('Defines if the keyvault should have soft delete enabled')
 param keyVaultSoftDelete bool
 
+@description('Tag key for the keyvault')
+param keyVaultTagKey string
+
+@description('Tag value for the keyvault')
+param keyVaultTagValue string
+
 @description('The cxParentZone Domain')
 param cxParentZoneName string
 
@@ -36,6 +42,9 @@ param grafanaRoles string
 @description('The zone redundant mode of Grafana')
 param grafanaZoneRedundantMode string
 
+@description('Cross-tenant security group for Grafana access (format: GroupObjectId;TenantId)')
+param crossTenantSecurityGroup string
+
 @description('Availability Zones to use for the infrastructure, as a CSV string. Defaults to all the zones of the location')
 param locationAvailabilityZones string = getLocationAvailabilityZonesCSV(location)
 var locationAvailabilityZoneList = csvToArray(locationAvailabilityZones)
@@ -45,6 +54,48 @@ param globalNSPName string
 
 @description('Access mode for this NSP')
 param globalNSPAccessMode string
+
+param oidcSubdomain string
+param azureFrontDoorProfileName string
+param azureFrontDoorKeyVaultName string
+param azureFrontDoorKeyVaultTagKey string
+param azureFrontDoorKeyVaultTagValue string
+param azureFrontDoorUseManagedCertificates bool
+param azureFrontDoorSkuName string
+param keyVaultAdminPrincipalId string
+param oidcMsiName string
+param azureFrontDoorManage bool
+
+@description('KV certificate officer principal ID')
+param kvCertOfficerPrincipalId string
+
+@description('SP for EV2 certificate access, i.e. geneva log access')
+param kvCertAccessPrincipalId string
+
+@description('Roles used for EV2 KeyVault access, i.e. geneva log access')
+param kvCertAccessRoleId string
+
+// Geneva Actions
+@description('Name of the geneva actions keyvault')
+param genevaKeyVaultName string
+
+@description('Should the geneva actions keyvault be private')
+param genevaKeyVaultPrivate bool
+
+@description('Should the geneva actions keyvault have soft delete enabled')
+param genevaKeyVaultSoftDelete bool
+
+@description('Tag key for the geneva actions keyvault')
+param genevaKeyVaultTagKey string
+
+@description('Tag value for the geneva actions keyvault')
+param genevaKeyVaultTagValue string
+
+@description('Name of geneva action extensions')
+param allowedAcisExtensions string
+
+@description('App ID for Geneva Actions - this is the MSFT owned one that will run our GAs')
+param genevaActionsPrincipalId string
 
 //
 //  G L O B A L   M S I
@@ -64,7 +115,8 @@ module globalKV '../modules/keyvault/keyvault.bicep' = {
     keyVaultName: keyVaultName
     private: keyVaultPrivate
     enableSoftDelete: keyVaultSoftDelete
-    purpose: 'imagesync'
+    tagKey: keyVaultTagKey
+    tagValue: keyVaultTagValue
   }
 }
 
@@ -73,7 +125,7 @@ module globalMSIKVSecretUser '../modules/keyvault/keyvault-secret-access.bicep' 
   params: {
     keyVaultName: keyVaultName
     roleName: 'Key Vault Secrets Officer'
-    managedIdentityPrincipalId: globalMSI.properties.principalId
+    managedIdentityPrincipalIds: [globalMSI.properties.principalId]
   }
 }
 
@@ -82,7 +134,35 @@ module globalMSIKVCryptoUser '../modules/keyvault/keyvault-secret-access.bicep' 
   params: {
     keyVaultName: keyVaultName
     roleName: 'Key Vault Crypto Officer'
-    managedIdentityPrincipalId: globalMSI.properties.principalId
+    managedIdentityPrincipalIds: [globalMSI.properties.principalId]
+  }
+}
+
+module kvCertOfficer '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: guid(kvCertOfficerPrincipalId, globalKV.name, 'cert-officer')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Key Vault Certificates Officer'
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
+  }
+}
+
+module kvSecretsOfficer '../modules/keyvault/keyvault-secret-access.bicep' = {
+  name: guid(kvCertOfficerPrincipalId, globalKV.name, 'secrets-officer')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Key Vault Secrets Officer'
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
+  }
+}
+
+module ev2CertAccess '../modules/keyvault/keyvault-secret-access.bicep' = if (kvCertAccessRoleId != '') {
+  name: guid(kvCertOfficerPrincipalId, globalKV.name, 'certificate-access')
+  params: {
+    keyVaultName: keyVaultName
+    roleName: 'Azure Service Deploy Release Management Key Vault Secrets User'
+    managedIdentityPrincipalIds: [kvCertAccessPrincipalId]
+    kvCertAccessRoleId: kvCertAccessRoleId
   }
 }
 
@@ -117,13 +197,87 @@ resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01'
 }
 
 //
-//   P A R E N T   Z O N E S
+//  C X   P A R E N T   Z O N E
 //
 
 resource cxParentZone 'Microsoft.Network/dnsZones@2018-05-01' = {
   name: cxParentZoneName
   location: 'global'
 }
+
+resource caaRecord 'Microsoft.Network/dnsZones/CAA@2023-07-01-preview' = {
+  name: '@'
+  parent: cxParentZone
+  properties: {
+    TTL: 3600
+    caaRecords: [
+      {
+        flags: 0
+        tag: 'issue'
+        value: 'digicert.com'
+      }
+      {
+        flags: 0
+        tag: 'issue'
+        value: 'microsoft.com'
+      }
+      {
+        flags: 0
+        tag: 'iodef'
+        value: 'mailto:caarecordaware@microsoft.com'
+      }
+    ]
+  }
+}
+
+resource spfRecord 'Microsoft.Network/dnsZones/TXT@2023-07-01-preview' = {
+  name: '@'
+  parent: cxParentZone
+  properties: {
+    TTL: 3600
+    TXTRecords: [
+      {
+        value: [
+          'v=spf1 -all'
+        ]
+      }
+    ]
+  }
+}
+
+resource dkimRecord 'Microsoft.Network/dnsZones/TXT@2023-07-01-preview' = {
+  name: '*._domainkey'
+  parent: cxParentZone
+  properties: {
+    TTL: 3600
+    TXTRecords: [
+      {
+        value: [
+          'v=DKIM1; p='
+        ]
+      }
+    ]
+  }
+}
+
+resource dmarcRecord 'Microsoft.Network/dnsZones/TXT@2023-07-01-preview' = {
+  name: '_dmarc'
+  parent: cxParentZone
+  properties: {
+    TTL: 3600
+    TXTRecords: [
+      {
+        value: [
+          'v=DMARC1; p=reject; pct=100; rua=mailto:rua@dmarc.microsoft; ruf=mailto:ruf@dmarc.microsoft; fo=1'
+        ]
+      }
+    ]
+  }
+}
+
+//
+//  S V C    P A R E N T   Z O N E
+//
 
 resource svcParentZone 'Microsoft.Network/dnsZones@2018-05-01' = {
   name: svcParentZoneName
@@ -184,10 +338,11 @@ module grafana '../modules/grafana/instance.bicep' = {
     grafanaRoles: grafanaRoles
     zoneRedundancy: determineZoneRedundancy(locationAvailabilityZoneList, grafanaZoneRedundantMode)
     azureMonitorWorkspaceIds: grafanaWorkspaceIdLookup.outputs.azureMonitorWorkspaceIds
+    crossTenantSecurityGroup: crossTenantSecurityGroup
   }
 }
 
-// 
+//
 //   N E T W O R K    S E C U R I T Y    P E R I M E T E R
 //
 
@@ -213,5 +368,57 @@ module globalNSPProfile '../modules/network/nsp-profile.bicep' = {
       //TODO: add ev2 access
       subscription().id
     ]
+  }
+}
+
+//
+//   A Z U R E   F R O N T   D O O R
+//
+
+module azureFrontDoor '../modules/oidc/global/main.bicep' = if (azureFrontDoorManage) {
+  name: 'azureFrontDoor'
+  params: {
+    subdomain: oidcSubdomain
+    parentZoneName: svcParentZoneName
+    frontDoorProfileName: azureFrontDoorProfileName
+    frontDoorEndpointName: azureFrontDoorProfileName
+    frontDoorSkuName: azureFrontDoorSkuName
+    securityPolicyName: azureFrontDoorProfileName
+    wafPolicyName: azureFrontDoorProfileName
+    keyVaultName: azureFrontDoorKeyVaultName
+    keyVaultTagKey: azureFrontDoorKeyVaultTagKey
+    keyVaultTagValue: azureFrontDoorKeyVaultTagValue
+    useManagedCertificates: azureFrontDoorUseManagedCertificates
+    keyVaultAdminSPObjId: keyVaultAdminPrincipalId
+    oidcMsiName: oidcMsiName
+  }
+}
+
+module grafanaAfdPermissions '../modules/grafana/observability-permissions.bicep' = if (azureFrontDoorManage) {
+  name: 'grafana-afd-permissions'
+  params: {
+    grafanaPrincipalId: grafana.outputs.grafanaPrincipalId
+    frontDoorProfileId: azureFrontDoor.outputs.frontDoorProfileId
+  }
+}
+
+output globalKeyVaultUrl string = globalKV.outputs.kvUrl
+
+// G E N E V A   A C T I O N S
+
+module genevaActions '../modules/genevaactions.bicep' = {
+  name: 'geneva-actions'
+  params: {
+    location: location
+    genevaKeyVaultName: genevaKeyVaultName
+    genevaKeyVaultPrivate: genevaKeyVaultPrivate
+    genevaKeyVaultSoftDelete: genevaKeyVaultSoftDelete
+    genevaKeyVaultTagKey: genevaKeyVaultTagKey
+    genevaKeyVaultTagValue: genevaKeyVaultTagValue
+    allowedAcisExtensions: allowedAcisExtensions
+    genevaActionsPrincipalId: genevaActionsPrincipalId
+    kvCertOfficerPrincipalId: kvCertOfficerPrincipalId
+    kvCertAccessPrincipalId: kvCertAccessPrincipalId
+    kvCertAccessRoleId: kvCertAccessRoleId
   }
 }

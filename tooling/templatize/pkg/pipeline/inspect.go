@@ -19,15 +19,20 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
+	"github.com/go-logr/logr"
+
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/topology"
+	"github.com/Azure/ARO-Tools/pipelines/types"
+
+	"github.com/Azure/ARO-HCP/tooling/templatize/bicep"
 )
 
-type StepInspectScope func(context.Context, *types.Pipeline, types.Step, *InspectOptions) error
+type StepInspectScope func(context.Context, *types.Pipeline, string, types.Step, *InspectOptions) error
 
-func NewStepInspectScopes() map[string]StepInspectScope {
+func NewStepInspectScopes(subscriptions map[string]string) map[string]StepInspectScope {
 	return map[string]StepInspectScope{
-		"vars": inspectVars,
+		"vars": inspectVars(subscriptions),
 	}
 }
 
@@ -37,9 +42,13 @@ type InspectOptions struct {
 	Format         string
 	Step           string
 	Region         string
-	Configuration  config.Configuration
+	Configuration  configtypes.Configuration
 	ScopeFunctions map[string]StepInspectScope
 	OutputFile     io.Writer
+	Concurrency    int
+
+	Service     *topology.Service
+	TopologyDir string
 }
 
 func Inspect(p *types.Pipeline, ctx context.Context, options *InspectOptions) error {
@@ -47,7 +56,7 @@ func Inspect(p *types.Pipeline, ctx context.Context, options *InspectOptions) er
 		for _, step := range rg.Steps {
 			if step.StepName() == options.Step {
 				if inspectFunc, ok := options.ScopeFunctions[options.Scope]; ok {
-					err := inspectFunc(ctx, p, step, options)
+					err := inspectFunc(ctx, p, p.ServiceGroup, step, options)
 					if err != nil {
 						return err
 					}
@@ -61,61 +70,90 @@ func Inspect(p *types.Pipeline, ctx context.Context, options *InspectOptions) er
 	return fmt.Errorf("step %q not found", options.Step)
 }
 
-func inspectVars(ctx context.Context, pipeline *types.Pipeline, s types.Step, options *InspectOptions) error {
-	var envVars map[string]string
-	switch step := s.(type) {
-	case *types.ShellStep:
-		outputChainingDependencies := make(map[string]bool)
-		for _, stepVar := range step.Variables {
-			if stepVar.Input != nil && stepVar.Input.Step != "" {
-				outputChainingDependencies[stepVar.Input.Step] = true
+func inspectVars(subscriptions map[string]string) func(ctx context.Context, pipeline *types.Pipeline, serviceGroup string, s types.Step, options *InspectOptions) error {
+	return func(ctx context.Context, pipeline *types.Pipeline, serviceGroup string, s types.Step, options *InspectOptions) error {
+		var envVars map[string]string
+		switch step := s.(type) {
+		case *types.ShellStep:
+			outputChainingDependencies := make(map[string]bool)
+			for _, stepVar := range step.Variables {
+				if stepVar.Input != nil && stepVar.Input.Step != "" {
+					outputChainingDependencies[stepVar.Input.Step] = true
+				}
 			}
+			outputChainingDependenciesList := make([]string, 0, len(outputChainingDependencies))
+			for depStep := range outputChainingDependencies {
+				outputChainingDependenciesList = append(outputChainingDependenciesList, depStep)
+			}
+			inputs, err := acquireOutputChainingInputs(ctx, outputChainingDependenciesList, pipeline, options, subscriptions)
+			if err != nil {
+				return fmt.Errorf("failure acquiring output-chaining inputs: %v", err)
+			}
+			envVars, err = mapStepVariables(serviceGroup, step.Variables, options.Configuration, inputs)
+			if err != nil {
+				return fmt.Errorf("failure mapping step variables: %v", err)
+			}
+		default:
+			return fmt.Errorf("inspecting step variables not implemented for action type %s", s.ActionType())
 		}
-		outputChainingDependenciesList := make([]string, 0, len(outputChainingDependencies))
-		for depStep := range outputChainingDependencies {
-			outputChainingDependenciesList = append(outputChainingDependenciesList, depStep)
-		}
-		inputs, err := aquireOutputChainingInputs(ctx, outputChainingDependenciesList, pipeline, options)
-		if err != nil {
-			return fmt.Errorf("failure acquiring output-chaining inputs: %v", err)
-		}
-		envVars, err = mapStepVariables(step.Variables, options.Configuration, inputs)
-		if err != nil {
-			return fmt.Errorf("failure mapping step variables: %v", err)
-		}
-	default:
-		return fmt.Errorf("inspecting step variables not implemented for action type %s", s.ActionType())
-	}
 
-	switch options.Format {
-	case "makefile":
-		printMakefileVars(envVars, options.OutputFile)
-	case "shell":
-		printShellVars(envVars, options.OutputFile)
-	default:
-		return fmt.Errorf("unknown output format %q", options.Format)
+		switch options.Format {
+		case "makefile":
+			printMakefileVars(envVars, options.OutputFile)
+		case "shell":
+			printShellVars(envVars, options.OutputFile)
+		default:
+			return fmt.Errorf("unknown output format %q", options.Format)
+		}
+		return nil
 	}
-	return nil
 }
 
-func aquireOutputChainingInputs(ctx context.Context, steps []string, pipeline *types.Pipeline, options *InspectOptions) (map[string]Output, error) {
-	inputs := make(map[string]Output)
+func acquireOutputChainingInputs(ctx context.Context, steps []string, pipeline *types.Pipeline, options *InspectOptions, subscriptions map[string]string) (Outputs, error) {
+	logger, err := logr.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	bicepClient, err := bicep.StartJSONRPCServer(ctx, logger, false)
+	if err != nil {
+		return nil, err
+	}
+
+	inputs := Outputs{
+		pipeline.ServiceGroup: {},
+	}
 	for _, depStep := range steps {
 		runOptions := &PipelineRunOptions{
-			DryRun:                   true,
-			Configuration:            options.Configuration,
-			Region:                   options.Region,
-			Step:                     depStep,
-			SubsciptionLookupFunc:    LookupSubscriptionID,
-			NoPersist:                true,
-			DeploymentTimeoutSeconds: 60,
+			BaseRunOptions: BaseRunOptions{
+				DryRun:                   true,
+				Configuration:            options.Configuration,
+				NoPersist:                true,
+				DeploymentTimeoutSeconds: 60,
+				BicepClient:              bicepClient,
+			},
+			Region:                options.Region,
+			Step:                  depStep,
+			SubsciptionLookupFunc: LookupSubscriptionID(subscriptions),
+			Concurrency:           options.Concurrency,
+			TopologyDir:           options.TopologyDir,
 		}
-		outputs, err := RunPipeline(pipeline, ctx, runOptions)
+		outputs, err := RunPipeline(options.Service, pipeline, ctx, runOptions, RunStep)
 		if err != nil {
 			return nil, err
 		}
-		for key, value := range outputs {
-			inputs[key] = value
+		for serviceGroup, resourceGroups := range outputs {
+			if _, ok := inputs[serviceGroup]; !ok {
+				inputs[serviceGroup] = map[string]map[string]Output{}
+			}
+			for group, values := range resourceGroups {
+				if _, ok := inputs[serviceGroup][group]; !ok {
+					inputs[serviceGroup][group] = map[string]Output{}
+				}
+				for key, value := range values {
+					inputs[pipeline.ServiceGroup][group][key] = value
+				}
+			}
 		}
 	}
 	return inputs, nil

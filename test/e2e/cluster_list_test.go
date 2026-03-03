@@ -20,57 +20,74 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	api "github.com/Azure/ARO-HCP/internal/api/v20240610preview/generated"
+	hcpsdk20240610preview "github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
+	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/integration"
 	"github.com/Azure/ARO-HCP/test/util/labels"
-	"github.com/Azure/ARO-HCP/test/util/log"
 )
 
 var _ = Describe("List HCPOpenShiftCluster", func() {
 	defer GinkgoRecover()
 
 	var (
-		clustersClient *api.HcpOpenShiftClustersClient
-		customerEnv    *integration.CustomerEnv
+		customerEnv *integration.CustomerEnv
+		clusterName string
 	)
 
 	BeforeEach(func() {
-		By("Preparing HCP clusters client")
-		clustersClient = clients.NewHcpOpenShiftClustersClient()
 		By("Preparing customer environment values")
 		customerEnv = &e2eSetup.CustomerEnv
+		clusterName = e2eSetup.Cluster.Name
 	})
 
 	Context("Positive", func() {
-		It("Successfully lists clusters filtered by subscription ID", labels.Medium, labels.Positive, func(ctx context.Context) {
+		It("Successfully lists clusters filtered by subscription ID", labels.RequireHappyPathInfra, labels.Medium, labels.Positive, func(ctx context.Context) {
+			tc := framework.NewTestContext()
+
 			By("Preparing pager to list clusters")
-			listOptions := &api.HcpOpenShiftClustersClientListBySubscriptionOptions{}
-			pager := clustersClient.NewListBySubscriptionPager(listOptions)
+			listOptions := &hcpsdk20240610preview.HcpOpenShiftClustersClientListBySubscriptionOptions{}
+			pager := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient().NewListBySubscriptionPager(listOptions)
 			By("Accessing IDs of all fetched clusters")
+			foundPreCreated := false
+			clusterCount := 0
 			for pager.More() {
 				clusterList, err := pager.NextPage(ctx)
 				Expect(err).To(BeNil())
-				log.Logger.Infoln("Number of clusters:", len(clusterList.Value))
+				clusterCount += len(clusterList.Value)
 				for _, val := range clusterList.Value {
 					Expect(*val.ID).ToNot(BeEmpty())
-					log.Logger.Infoln(*val.ID)
+					if val.Name != nil && *val.Name == clusterName {
+						foundPreCreated = true
+						break
+					}
 				}
 			}
+			Expect(clusterCount).To(BeNumerically(">", 0), "Expected at least one cluster to be listed")
+			Expect(foundPreCreated).To(BeTrue(), "Expected to find pre-created cluster name %s in the list", clusterName)
 		})
 
-		It("Successfully lists clusters filtered by resource group name", labels.Medium, labels.Positive, func(ctx context.Context) {
+		It("Successfully lists clusters filtered by resource group name", labels.RequireHappyPathInfra, labels.Medium, labels.Positive, func(ctx context.Context) {
+			tc := framework.NewTestContext()
+
 			By("Preparing pager to list clusters")
-			pager := clustersClient.NewListByResourceGroupPager(customerEnv.CustomerRGName, nil)
+			pager := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient().NewListByResourceGroupPager(customerEnv.CustomerRGName, nil)
 			By("Accessing IDs of all fetched clusters")
+			foundPreCreated := false
+			clusterCount := 0
 			for pager.More() {
 				clusterList, err := pager.NextPage(ctx)
 				Expect(err).To(BeNil())
-				log.Logger.Infoln("Number of clusters:", len(clusterList.Value))
+				clusterCount += len(clusterList.Value)
 				for _, val := range clusterList.Value {
 					Expect(*val.ID).ToNot(BeEmpty())
-					log.Logger.Infoln(*val.ID)
+					if val.Name != nil && *val.Name == clusterName {
+						foundPreCreated = true
+						break
+					}
 				}
 			}
+			Expect(clusterCount).To(BeNumerically(">", 0), "Expected at least one cluster to be listed")
+			Expect(foundPreCreated).To(BeTrue(), "Expected to find pre-created cluster name %s in the list", clusterName)
 		})
 	})
 })

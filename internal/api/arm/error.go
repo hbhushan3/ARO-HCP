@@ -19,12 +19,17 @@ import (
 	"fmt"
 	"net/http"
 
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+
+	"github.com/Azure/ARO-HCP/internal/utils/apihelpers"
 )
 
 // CloudError codes
 const (
 	CloudErrorCodeInternalServerError      = "InternalServerError"
+	CloudErrorCodeServiceUnavailable       = "ServiceUnavailable"
 	CloudErrorCodeInvalidParameter         = "InvalidParameter"
 	CloudErrorCodeInvalidRequestContent    = "InvalidRequestContent"
 	CloudErrorCodeInvalidResource          = "InvalidResource"
@@ -41,6 +46,8 @@ const (
 	CloudErrorCodeInvalidSubscriptionID    = "InvalidSubscriptionID"
 	CloudErrorCodeInvalidResourceName      = "InvalidResourceName"
 	CloudErrorCodeInvalidResourceGroupName = "InvalidResourceGroupName"
+	CloudErrorCodeLockContention           = "LockContention"
+	CloudErrorCodeFeatureNotEnabled        = "FeatureNotEnabled"
 )
 
 // CloudError represents a complete resource provider error.
@@ -76,6 +83,53 @@ type CloudErrorBody struct {
 
 	// A list of additional details about the error.
 	Details []CloudErrorBody `json:"details,omitempty"`
+}
+
+func CloudErrorFromFieldError(fieldError *field.Error) *CloudError {
+	if fieldError == nil {
+		return nil
+	}
+	return &CloudError{
+		StatusCode:     http.StatusBadRequest,
+		CloudErrorBody: cloudErrorBodyFromFieldError(fieldError),
+	}
+}
+
+func cloudErrorBodyFromFieldError(fieldError *field.Error) *CloudErrorBody {
+	if fieldError == nil {
+		return nil
+	}
+	return &CloudErrorBody{
+		Code:    CloudErrorCodeInvalidRequestContent,
+		Message: fieldError.ErrorBody(),
+		Target:  fieldError.Field,
+	}
+}
+
+func CloudErrorFromFieldErrors(fieldErrors field.ErrorList) error {
+	if len(fieldErrors) == 0 {
+		return nil
+	}
+	if len(fieldErrors) == 1 {
+		return CloudErrorFromFieldError(fieldErrors[0])
+	}
+
+	details := []CloudErrorBody{}
+	for _, curr := range fieldErrors {
+		if curr == nil {
+			continue
+		}
+		details = append(details, *cloudErrorBodyFromFieldError(curr))
+	}
+
+	return &CloudError{
+		StatusCode: http.StatusBadRequest,
+		CloudErrorBody: &CloudErrorBody{
+			Code:    CloudErrorCodeMultipleErrorsOccurred,
+			Message: fmt.Sprintf("%d errors occurred", len(details)),
+			Details: details,
+		},
+	}
 }
 
 // NewCloudErrorBodyFromSlice converts a CloudErrorBody slice to a single CloudErrorBody.
@@ -137,6 +191,9 @@ func WriteError(w http.ResponseWriter, statusCode int, code, target, format stri
 
 // WriteCloudError writes a CloudError to the given ResponseWriter
 func WriteCloudError(w http.ResponseWriter, err *CloudError) {
+	if err.Code == CloudErrorCodeServiceUnavailable {
+		w.Header().Set("Retry-After", "59") // never choose a round number
+	}
 	w.Header()[HeaderNameErrorCode] = []string{err.Code}
 	_, _ = WriteJSONResponse(w, err.StatusCode, err)
 }
@@ -186,13 +243,13 @@ func NewResourceNotFoundError(resourceID *azcorearm.ResourceID) *CloudError {
 	var code string
 	var message string
 
-	switch resourceID.ResourceType.String() {
-	case azcorearm.SubscriptionResourceType.String():
+	switch {
+	case apihelpers.ResourceTypeEqual(resourceID.ResourceType, azcorearm.SubscriptionResourceType):
 		code = CloudErrorCodeSubscriptionNotFound
 		message = fmt.Sprintf(
 			"The subscription '%s' was not found.",
 			resourceID.SubscriptionID)
-	case azcorearm.ResourceGroupResourceType.String():
+	case apihelpers.ResourceTypeEqual(resourceID.ResourceType, azcorearm.ResourceGroupResourceType):
 		code = CloudErrorCodeResourceGroupNotFound
 		message = fmt.Sprintf(
 			"The resource group '%s' under subscription '%s' was not found.",

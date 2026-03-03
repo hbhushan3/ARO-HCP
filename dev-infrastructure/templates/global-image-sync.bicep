@@ -10,11 +10,11 @@ param location string
 @description('Specifies the name of the container app environment.')
 param containerAppEnvName string
 
+@description('Prefix for the job name')
+param jobNamePrefix string
+
 @description('Container app public IP service tags')
 param containerAppOutboundServiceTags string
-var containerAppOutboundServiceTagsArray = [
-  for tag in (csvToArray(containerAppOutboundServiceTags)): parseIPServiceTag(tag)
-]
 
 @description('Specifies the name of the log analytics workspace.')
 param containerAppLogAnalyticsName string = 'containerapp-log'
@@ -43,6 +43,9 @@ param ocMirrorEnabled bool
 @description('The name of the pull secret for the oc-mirror job')
 param ocpPullSecretName string
 
+@description('The versions of the operator to mirror')
+param operatorVersionsToMirror string
+
 resource kv 'Microsoft.KeyVault/vaults@2024-04-01-preview' existing = {
   name: keyVaultName
 }
@@ -57,7 +60,7 @@ module containerAppOutboundPublicIP '../modules/network/publicipaddress.bicep' =
   name: 'containerapp-nat-gateway-ip'
   params: {
     name: 'containerapp-nat-gateway-ip'
-    ipTags: containerAppOutboundServiceTagsArray
+    ipTags: containerAppOutboundServiceTags
     location: location
     zones: locationHasAvailabilityZones ? locationAvailabilityZones : null
   }
@@ -197,7 +200,7 @@ module acrPushPullPermissions '../modules/acr/acr-permissions.bicep' = [
     name: '${imageSyncManagedIdentity}-${acrName}-acr-pushpull'
     scope: resourceGroup(acrResourceGroup)
     params: {
-      principalId: uami.properties.principalId
+      principalIds: [uami.properties.principalId]
       grantPushAccess: true
       grantPullAccess: true
       acrName: acrName
@@ -212,7 +215,7 @@ module pullSecretPermission '../modules/keyvault/keyvault-secret-access.bicep' =
       keyVaultName: keyVaultName
       secretName: secretName
       roleName: 'Key Vault Secrets User'
-      managedIdentityPrincipalId: uami.properties.principalId
+      managedIdentityPrincipalIds: [uami.properties.principalId]
     }
     dependsOn: [
       kv
@@ -221,97 +224,18 @@ module pullSecretPermission '../modules/keyvault/keyvault-secret-access.bicep' =
 ]
 
 //
-//  O P E R A T O R   M I R R O R   J O B
-//
-
-// this is v2alpha1 syntax for oc-mirror 4.16, which we use until 4.18+ offers
-// a way to not rebuild the catalogs, which fails in ACA
-
-var operatorMirrorJobConfiguration = [
-  {
-    name: 'acm-mirror'
-    cron: '0 10 * * *'
-    timeout: 4 * 60 * 60
-    retryLimit: 3
-    targetRegistry: svcAcrName
-    imageSetConfig: {
-      kind: 'ImageSetConfiguration'
-      apiVersion: 'mirror.openshift.io/v2alpha1'
-      mirror: {
-        operators: [
-          {
-            catalog: 'registry.redhat.io/redhat/redhat-operator-index:v4.16'
-            packages: [
-              {
-                name: 'multicluster-engine'
-                bundles: [
-                  {
-                    name: 'multicluster-engine.v2.7.0'
-                  }
-                  {
-                    name: 'multicluster-engine.v2.8.0'
-                  }
-                  {
-                    name: 'multicluster-engine.v2.8.1'
-                  }
-                  {
-                    name: 'multicluster-engine.v2.8.2'
-                  }
-                ]
-              }
-              {
-                name: 'advanced-cluster-management'
-                bundles: [
-                  {
-                    name: 'advanced-cluster-management.v2.12.0'
-                  }
-                  {
-                    name: 'advanced-cluster-management.v2.13.0'
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      }
-    }
-    compatibility: 'NOCATALOG'
-  }
-]
-
-//
 //  O C P   M I R R O R   J O B
 //
 
-var ocpMirrorDefinitions = [
-  {
-    name: 'oc-mirror-4-18'
-    major: '4.18'
-    channels: [
-      {
-        name: 'stable-4.18'
-        type: 'ocp'
-        full: true
-        minVersion: '4.18.1'
-        maxVersion: '4.18.9'
-      }
-    ]
-  }
-  {
-    name: 'oc-mirror-4-19'
-    major: '4.19'
-    channels: [
-      {
-        name: 'candidate-4.19'
-        type: 'ocp'
-        full: true
-        minVersion: '4.19.0-rc.2'
-      }
-    ]
+var operatorVersionsToMirrorArray = csvToArray(operatorVersionsToMirror)
+var operatorVersionsToMirrorDefinitions = [
+  for version in operatorVersionsToMirrorArray: {
+    name: 'oc-mirror-${replace(version, '.', '-')}'
+    major: version
   }
 ]
 var ocpMirrorJobConfiguration = [
-  for job in ocpMirrorDefinitions: {
+  for job in operatorVersionsToMirrorDefinitions: {
     name: job.name
     cron: '0 * * * *'
     timeout: 4 * 60 * 60
@@ -321,11 +245,6 @@ var ocpMirrorJobConfiguration = [
       kind: 'ImageSetConfiguration'
       apiVersion: 'mirror.openshift.io/v2alpha1'
       mirror: {
-        platform: {
-          architectures: ['multi', 'amd64', 'arm64']
-          channels: job.channels
-          graph: true
-        }
         additionalImages: [
           { name: 'registry.redhat.io/redhat/redhat-operator-index:v${job.major}' }
           { name: 'registry.redhat.io/redhat/certified-operator-index:v${job.major}' }
@@ -338,11 +257,11 @@ var ocpMirrorJobConfiguration = [
   }
 ]
 
-var ocMirrorJobConfiguration = ocMirrorEnabled ? union(ocpMirrorJobConfiguration, operatorMirrorJobConfiguration) : []
+var ocMirrorJobConfiguration = ocMirrorEnabled ? ocpMirrorJobConfiguration : []
 
 resource ocMirrorJobs 'Microsoft.App/jobs@2024-03-01' = [
   for i in range(0, length(ocMirrorJobConfiguration)): {
-    name: ocMirrorJobConfiguration[i].name
+    name: '${jobNamePrefix}${ocMirrorJobConfiguration[i].name}'
     location: location
     identity: {
       type: 'UserAssigned'

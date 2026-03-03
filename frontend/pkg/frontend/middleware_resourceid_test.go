@@ -16,17 +16,20 @@ package frontend
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
-	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+	"github.com/go-logr/logr/testr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
+
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 func TestMiddlewareResourceID(t *testing.T) {
@@ -125,7 +128,7 @@ func TestMiddlewareResourceID(t *testing.T) {
 			url := "http://example.com" + strings.ToLower(tt.path)
 
 			ctx := context.Background()
-			ctx = ContextWithLogger(ctx, slog.Default())
+			ctx = utils.ContextWithLogger(ctx, testr.New(t))
 			ctx = ContextWithOriginalPath(ctx, tt.path)
 
 			ctx, sr := initSpanRecorder(ctx)
@@ -139,7 +142,7 @@ func TestMiddlewareResourceID(t *testing.T) {
 
 			MiddlewareResourceID(writer, request, next)
 
-			resourceID, err := ResourceIDFromContext(request.Context())
+			resourceID, err := utils.ResourceIDFromContext(request.Context())
 			if tt.expectedErr {
 				require.Error(t, err)
 				return

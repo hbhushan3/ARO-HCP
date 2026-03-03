@@ -13,9 +13,6 @@ param maestroEventGridPrivate bool
 @description('The certificate issuer for the EventGrid Namespace')
 param maestroCertificateIssuer string
 
-@description('Set to true to prevent resources from being pruned after 48 hours')
-param persist bool = false
-
 @description('''
   This is the global parent DNS zone for ARO HCP customer cluster DNS.
   It is prefixed with regionalDNSSubdomain to form the actual regional DNS zone name
@@ -30,20 +27,8 @@ param svcParentZoneResourceId string
 
 param regionalDNSSubdomain string
 
-param globalRegion string
-param regionalRegion string
-
-@description('The resource ID of the OCP ACR')
-param ocpAcrResourceId string
-
-@description('The resource ID of the SVC ACR')
-param svcAcrResourceId string
-
 @description('MSI that will be used during pipeline runs')
-param aroDevopsMsiId string
-
-@description('Enable Log Analytics')
-param enableLogAnalytics bool
+param globalMSIId string
 
 @description('Grafana resource ID')
 param grafanaResourceId string
@@ -56,17 +41,6 @@ param hcpMonitorName string
 
 import * as res from '../modules/resource.bicep'
 
-// Tags the resource group
-resource resourceGroupTags 'Microsoft.Resources/tags@2024-03-01' = {
-  name: 'default'
-  scope: resourceGroup()
-  properties: {
-    tags: {
-      persist: toLower(string(persist))
-    }
-  }
-}
-
 // Reader role
 // https://www.azadvertizer.net/azrolesadvertizer/acdd72a7-3385-48ef-bd42-f606fba81ae7.html
 var readerRoleId = subscriptionResourceId(
@@ -77,9 +51,9 @@ var readerRoleId = subscriptionResourceId(
 // service deployments running as the aroDevopsMsi need to lookup metadata about all kinds
 // of resources, e.g. AKS metadata, database metadata, MI metadata, etc.
 resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, aroDevopsMsiId, readerRoleId)
+  name: guid(resourceGroup().id, globalMSIId, readerRoleId)
   properties: {
-    principalId: reference(aroDevopsMsiId, '2023-01-31').principalId
+    principalId: reference(globalMSIId, '2023-01-31').principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: readerRoleId
   }
@@ -128,63 +102,20 @@ module regionalSvcZoneDelegation '../modules/dns/zone-delegation.bicep' = {
 }
 
 //
-// R E G I O N A L   A C R   R E P L I C A T I O N
-//
-
-var ocpAcrRef = res.acrRefFromId(ocpAcrResourceId)
-var ocpAcrReplicationName = '${ocpAcrRef.name}${location}replica'
-module ocpAcrReplication '../modules/acr/acr-replication.bicep' = if (globalRegion != regionalRegion) {
-  name: ocpAcrReplicationName
-  scope: resourceGroup(ocpAcrRef.resourceGroup.subscriptionId, ocpAcrRef.resourceGroup.name)
-  params: {
-    acrReplicationLocation: location
-    acrReplicationParentAcrName: ocpAcrRef.name
-    acrReplicationReplicaName: ocpAcrReplicationName
-  }
-}
-
-var svcAcrRef = res.acrRefFromId(svcAcrResourceId)
-var svcAcrReplicationName = '${svcAcrRef.name}${location}replica'
-module svcAcrReplication '../modules/acr/acr-replication.bicep' = if (globalRegion != regionalRegion) {
-  name: svcAcrReplicationName
-  scope: resourceGroup(svcAcrRef.resourceGroup.subscriptionId, svcAcrRef.resourceGroup.name)
-  params: {
-    acrReplicationLocation: location
-    acrReplicationParentAcrName: svcAcrRef.name
-    acrReplicationReplicaName: svcAcrReplicationName
-  }
-}
-
-//
 // M A E S T R O
 //
 
 module maestroInfra '../modules/maestro/maestro-infra.bicep' = {
-  name: '${deployment().name}-maestro'
+  name: 'maestro-infra-deployment'
   params: {
     eventGridNamespaceName: maestroEventGridNamespacesName
     location: location
     maxClientSessionsPerAuthName: maestroEventGridMaxClientSessionsPerAuthName
     publicNetworkAccess: maestroEventGridPrivate ? 'Disabled' : 'Enabled'
     certificateIssuer: maestroCertificateIssuer
-    logAnalyticsWorkspaceId: enableLogAnalytics ? logAnalyticsWorkspace.id : ''
   }
 }
 
-//
-//   L O G   A N A L Y T I C S
-//
-
-resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (enableLogAnalytics) {
-  name: 'log-analytics-workspace'
-  location: resourceGroup().location
-  properties: {
-    sku: {
-      name: 'PerGB2018'
-    }
-    retentionInDays: 90
-  }
-}
 //
 //   M O N I T O R I N G
 //
@@ -194,6 +125,7 @@ module svcMonitor '../modules/metrics/monitor.bicep' = {
   params: {
     grafanaResourceId: grafanaResourceId
     monitorName: svcMonitorName
+    purpose: 'services'
   }
 }
 
@@ -202,5 +134,6 @@ module hcpMonitor '../modules/metrics/monitor.bicep' = {
   params: {
     grafanaResourceId: grafanaResourceId
     monitorName: hcpMonitorName
+    purpose: 'hcps'
   }
 }

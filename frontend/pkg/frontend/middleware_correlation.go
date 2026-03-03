@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/Azure/ARO-HCP/internal/api/arm"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 // MiddlewareCorrelationData reads the correlation data from the incoming
@@ -27,21 +28,21 @@ import (
 func MiddlewareCorrelationData(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	var (
 		ctx    = r.Context()
-		logger = LoggerFromContext(ctx)
+		logger = utils.LoggerFromContext(ctx)
 	)
 
 	correlationData := arm.NewCorrelationData(r)
 	ctx = ContextWithCorrelationData(ctx, correlationData)
 
-	logger = logger.With("request_id", correlationData.RequestID.String())
+	logger = logger.WithValues(utils.LogValues{}.AddRequestID(correlationData.RequestID.String())...)
 	if correlationData.ClientRequestID != "" {
-		logger = logger.With("client_request_id", correlationData.ClientRequestID)
+		logger = logger.WithValues(utils.LogValues{}.AddClientRequestID(correlationData.ClientRequestID)...)
 	}
 
 	if correlationData.CorrelationRequestID != "" {
-		logger = logger.With("correlation_request_id", correlationData.CorrelationRequestID)
+		logger = logger.WithValues(utils.LogValues{}.AddCorrelationRequestID(correlationData.CorrelationRequestID)...)
 	}
-	ctx = ContextWithLogger(ctx, logger)
+	ctx = utils.ContextWithLogger(ctx, logger)
 	r = r.WithContext(ctx)
 
 	w.Header().Set(arm.HeaderNameRequestID, correlationData.RequestID.String())

@@ -2,9 +2,9 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: package-operator-bootstrap
-  namespace: package-operator-system
+  namespace: '{{ .Release.Namespace }}'
 spec:
-  # delete 90seconds after completion, so helm can finish succesfully
+  # delete 90seconds after completion, so helm can finish successfully
   ttlSecondsAfterFinished: 90
   # set deadline to 30min
   activeDeadlineSeconds: 1800
@@ -15,13 +15,15 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       restartPolicy: OnFailure
-      serviceAccountName: package-operator
+      serviceAccountName: '{{ .Values.serviceAccount.name }}'
       containers:
       - name: package-operator
         image: "{{ .Values.pkoImageManagerRegistry }}/{{ .Values.pkoImageManagerRepository }}@{{ .Values.pkoImageManagerDigest }}"
         args: ["-self-bootstrap={{ .Values.pkoImagePackageRegistry }}/{{ .Values.pkoImagePackageRepository }}@{{ .Values.pkoImagePackageDigest }}"]
         imagePullPolicy: Always
         env:
+        - name: LOG_LEVEL
+          value: "0"
         - name: PKO_REGISTRY_HOST_OVERRIDES
           value: ''
         - name: PKO_CONFIG

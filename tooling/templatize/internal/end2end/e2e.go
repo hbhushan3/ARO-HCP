@@ -19,15 +19,18 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/Azure/ARO-Tools/pipelines/topology"
+	"github.com/Azure/ARO-Tools/pipelines/types"
+	"github.com/Azure/ARO-Tools/tools/cmdutils"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
-
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/azauth"
+	cmdopts "github.com/Azure/ARO-HCP/tooling/templatize/cmd"
+	pipelineopts "github.com/Azure/ARO-HCP/tooling/templatize/cmd/pipeline/options"
+	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/pipeline/run"
 	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/pipeline"
 )
 
@@ -38,12 +41,10 @@ func shouldRunE2E() bool {
 }
 
 type E2E interface {
-	SetConfig(updates config.Configuration)
 	UseRandomRG() func() error
 	AddBicepTemplate(template, templateFileName, paramfile, paramfileName string)
-	SetOSArgs()
 	EnableDryRun()
-	Persist() error
+	Persist() (opts *run.RawRunOptions, err error)
 }
 
 type bicepTemplate struct {
@@ -54,13 +55,14 @@ type bicepTemplate struct {
 }
 
 type e2eImpl struct {
-	config   config.Configuration
+	config   map[string]any
 	makefile string
 	pipeline types.Pipeline
 	biceps   []bicepTemplate
 	schema   string
 	tmpdir   string
 	rgName   string
+	dryRun   bool
 }
 
 var _ E2E = &e2eImpl{}
@@ -69,19 +71,19 @@ func newE2E(tmpdir string, pipelineFilePath string) (*e2eImpl, error) {
 	imp := e2eImpl{
 		tmpdir: tmpdir,
 		schema: `{"type": "object"}`,
-		config: config.Configuration{
+		config: map[string]any{
 			"$schema": "schema.json",
-			"defaults": config.Configuration{
+			"defaults": map[string]any{
 				"region":       "westus3",
 				"subscription": "ARO Hosted Control Planes (EA Subscription 1)",
 				"rg":           defaultRgName,
 			},
-			"clouds": config.Configuration{
-				"public": config.Configuration{
-					"defaults": config.Configuration{},
-					"environments": config.Configuration{
-						"dev": config.Configuration{
-							"defaults": config.Configuration{},
+			"clouds": map[string]any{
+				"public": map[string]any{
+					"defaults": map[string]any{},
+					"environments": map[string]any{
+						"dev": map[string]any{
+							"defaults": map[string]any{},
 						},
 					},
 				},
@@ -98,7 +100,6 @@ func newE2E(tmpdir string, pipelineFilePath string) (*e2eImpl, error) {
 	if err := yaml.Unmarshal(pipelineBytes, &imp.pipeline); err != nil {
 		return nil, fmt.Errorf("error loading pipeline %v", err)
 	}
-	imp.SetOSArgs()
 	return &imp, nil
 }
 
@@ -116,14 +117,23 @@ func GenerateRandomRGName() string {
 
 func (e *e2eImpl) UseRandomRG() func() error {
 	e.rgName = GenerateRandomRGName()
-	e.SetConfig(config.Configuration{"defaults": config.Configuration{"rg": e.rgName}})
+	defaults, ok := e.config["defaults"]
+	if !ok {
+		panic("defaults not set")
+	}
+	asMap, ok := defaults.(map[string]any)
+	if !ok {
+		panic(fmt.Sprintf("defaults not a map[string]any: %T", defaults))
+	}
+	asMap["rg"] = e.rgName
+	e.config["defaults"] = asMap
 
 	return func() error {
-		subsriptionID, err := pipeline.LookupSubscriptionID(context.Background(), "ARO Hosted Control Planes (EA Subscription 1)")
+		subsriptionID, err := pipeline.LookupSubscriptionID(map[string]string{})(context.Background(), "ARO Hosted Control Planes (EA Subscription 1)")
 		if err != nil {
 			return err
 		}
-		cred, err := azauth.GetAzureTokenCredentials()
+		cred, err := cmdutils.GetAzureTokenCredentials()
 		if err != nil {
 			return err
 		}
@@ -136,23 +146,8 @@ func (e *e2eImpl) UseRandomRG() func() error {
 	}
 }
 
-func (e *e2eImpl) SetOSArgs() {
-	os.Args = []string{"test",
-		"--cloud", "public",
-		"--pipeline-file", e.tmpdir + "/pipeline.yaml",
-		"--config-file", e.tmpdir + "/config.yaml",
-		"--deploy-env", "dev",
-		"--no-persist-tag",
-		"--region", "westus3",
-	}
-}
-
 func (e *e2eImpl) EnableDryRun() {
-	os.Args = append(os.Args, "--dry-run")
-}
-
-func (e *e2eImpl) SetConfig(updates config.Configuration) {
-	config.MergeConfiguration(e.config, updates)
+	e.dryRun = true
 }
 
 func (e *e2eImpl) AddBicepTemplate(template, templateFileName, paramfile, paramfileName string) {
@@ -164,18 +159,20 @@ func (e *e2eImpl) AddBicepTemplate(template, templateFileName, paramfile, paramf
 	})
 }
 
-func (e *e2eImpl) Persist() error {
+func (e *e2eImpl) Persist() (*run.RawRunOptions, error) {
 	if len(e.biceps) != 0 {
 		for _, b := range e.biceps {
 
 			err := os.WriteFile(e.tmpdir+"/"+b.bicepFileName, []byte(b.bicepFile), 0644)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			err = os.WriteFile(e.tmpdir+"/"+b.paramFileName, []byte(b.paramFile), 0644)
-			if err != nil {
-				return err
+			if (len(b.paramFile) != 0) || (len(b.paramFileName) != 0) {
+				err = os.WriteFile(e.tmpdir+"/"+b.paramFileName, []byte(b.paramFile), 0644)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -183,28 +180,68 @@ func (e *e2eImpl) Persist() error {
 	if e.makefile != "" {
 		err := os.WriteFile(e.tmpdir+"/Makefile", []byte(e.makefile), 0644)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	configBytes, err := yaml.Marshal(e.config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	err = os.WriteFile(e.tmpdir+"/config.yaml", configBytes, 0644)
+	configFile := filepath.Join(e.tmpdir, "config.yaml")
+	err = os.WriteFile(configFile, configBytes, 0644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	err = os.WriteFile(e.tmpdir+"/schema.json", []byte(e.schema), 0644)
+	schemaFile := filepath.Join(e.tmpdir, "schema.json")
+	err = os.WriteFile(schemaFile, []byte(e.schema), 0644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	pipelineBytes, err := yaml.Marshal(e.pipeline)
 	if err != nil {
-		return fmt.Errorf("failed to marshal pipeline: %w", err)
+		return nil, fmt.Errorf("failed to marshal pipeline: %w", err)
 	}
-	return os.WriteFile(e.tmpdir+"/pipeline.yaml", []byte(pipelineBytes), 0644)
+
+	pipelineFile := filepath.Join(e.tmpdir, "pipeline.yaml")
+	if err := os.WriteFile(pipelineFile, pipelineBytes, 0644); err != nil {
+		return nil, err
+	}
+
+	topo := topology.Topology{
+		Services: []topology.Service{{
+			ServiceGroup: e.pipeline.ServiceGroup,
+			Purpose:      "Test pipeline.",
+			PipelinePath: "pipeline.yaml",
+		}},
+	}
+	rawTopo, err := yaml.Marshal(topo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal topology: %w", err)
+	}
+	topologyFile := filepath.Join(e.tmpdir, "topology.yaml")
+	if err := os.WriteFile(topologyFile, rawTopo, 0644); err != nil {
+		return nil, err
+	}
+
+	return &run.RawRunOptions{
+		PipelineOptions: &pipelineopts.RawPipelineOptions{
+			RolloutOptions: &cmdopts.RawRolloutOptions{
+				Region: "westus3",
+				BaseOptions: &cmdopts.RawOptions{
+					ConfigFile: configFile,
+					Cloud:      "public",
+					DeployEnv:  "dev",
+				},
+			},
+			ServiceGroup: e.pipeline.ServiceGroup,
+			TopologyFile: topologyFile,
+		},
+		DryRun:                   e.dryRun,
+		NoPersist:                true,
+		DeploymentTimeoutSeconds: 120,
+	}, nil
 }

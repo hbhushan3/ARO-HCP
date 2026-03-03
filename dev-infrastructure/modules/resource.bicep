@@ -8,8 +8,8 @@ type resourceGroupReference = {
 
 @export()
 func resourceGroupFromResourceId(resourceId string) resourceGroupReference => {
-  subscriptionId: split(resourceId, '/')[2]
-  name: split(resourceId, '/')[4]
+  subscriptionId: resourceId != '' ? split(resourceId, '/')[2] : ''
+  name: resourceId != '' ? split(resourceId, '/')[4] : ''
 }
 
 @export()
@@ -86,4 +86,28 @@ type grafanaRef = {
 func grafanaRefFromId(grafanaResourceId string) grafanaRef => {
   resourceGroup: resourceGroupFromResourceId(grafanaResourceId)
   name: last(split(grafanaResourceId, '/'))
+}
+
+@export()
+type frontdoorProfileRef = {
+  resourceGroup: resourceGroupReference
+  name: string
+}
+
+@export()
+func frontdoorProfileRefFromId(frontdoorProfileResourceId string) frontdoorProfileRef => {
+  resourceGroup: resourceGroupFromResourceId(frontdoorProfileResourceId)
+  name: last(split(frontdoorProfileResourceId, '/'))
+}
+
+@export()
+type kustoRef = {
+  resourceGroup: resourceGroupReference
+  name: string
+}
+
+@export()
+func kustoRefFromId(kustoResourceId string) kustoRef => {
+  resourceGroup: resourceGroupFromResourceId(kustoResourceId)
+  name: kustoResourceId != '' ? last(split(kustoResourceId, '/')) : ''
 }

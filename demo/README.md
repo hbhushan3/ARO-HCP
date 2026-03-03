@@ -4,12 +4,13 @@
 
 * have a `KUBECONFIG` for a SC and MC, e.g. for the [integrated DEV environment](../dev-infrastructure/docs/development-setup.md#access-integrated-dev-environment)
 * port-forward RP running on SC: `kubectl port-forward -n aro-hcp svc/aro-hcp-frontend 8443:8443`
-* (optional but useful) port-forward CS running on SC: `kubectl port-forward -n cluster-service svc/clusters-service 8001:8000`
+* (optional but useful) port-forward CS running on SC: `kubectl port-forward -n clusters-service svc/clusters-service 8001:8000`
 * (optional but useful) port-forward Maestro running on SC: `kubectl port-forward -n maestro svc/maestro 8002:8000`
+* ensure that the environment variable `$LOCATION` is either unset or set to the integrated dev environment's region
 
 ## Register the subscription with the RP
 
-The RP needs to know the subscription in order to be able to create cluters in it.
+The RP needs to know the subscription in order to be able to create clusters in it.
 Run the following command `once` to make the subscription known to the RP.
 
 ```bash
@@ -24,7 +25,7 @@ We provision HCPs with BYO VNET, so we need to create the VNET, Subnet and NSG u
 ./02-customer-infra.sh
 ```
 
-The resources are created in a resourcegroup named `$USER-net-rg`.
+The resources are created in a resource group named `$USER-net-rg`.
 
 ## Create cluster
 
@@ -43,6 +44,7 @@ CLUSTER_NAME=abc ./03-create-cluster.sh
 
 Observe the cluster creation with `./query-cluster-rp.sh` until `properties.provisioningState` is (hopefully) `Succeeded`.
 `properties.api.url` holds the URL to the API server of the HCP.
+`properties.api.authorizedCidrs` (optional) can be used to restrict access to the API server to specific IPv4 CIDR blocks.
 
 See [Get the kubeconfig for an HCP](#get-the-kubeconfig-for-an-hcp) on how to get the kubeconfig for the HCP.
 
@@ -66,6 +68,54 @@ To check progress on
 ./05-delete-cluster.sh
 ```
 
+## Use candidate or nightly channel group
+
+To use these channel groups in the personal dev environment. We need to have a subscription with the AFEC flag registered.
+Use the script `FFLAG=AllowDevNonStableChannels ./register-feature-flag.sh` to registered the AFEC to your subscription.
+
+Then run the scripts described previously.
+Make sure to change the version in the template to use the desired one, both for clusters and node pools.
+
+```json
+    "version": {
+      "id": "4.20.5", 
+      "channelGroup": "candidate"
+    },
+```
+or 
+
+```json
+    "version": {
+      "id": "4.19.0-0.nightly-multi-2026-01-12-061259", 
+      "channelGroup": "nightly"
+    },
+```
+
+A good way to select a version is looking into Cininnati https://multi.ocp.releases.ci.openshift.org/
+this can be used to get the name of the version. Especially for nightly versions.
+
+## Enable experimental cluster features
+
+Experimental features are gated by the `ExperimentalReleaseFeatures` AFEC and controlled via per-resource ARM tags. Register the AFEC first:
+
+```bash
+FFLAG=ExperimentalReleaseFeatures ./register-feature-flag.sh
+```
+
+Then set one or both tags on your cluster:
+
+```json
+{
+  "tags": {
+    "aro-hcp.experimental.cluster.single-replica": "SingleReplica",
+    "aro-hcp.experimental.cluster.size-override": "Minimal"
+  }
+}
+```
+
+- **`single-replica`** — single-replica control plane components (AvailabilityPolicy)
+- **`size-override`** — reduced resource requests for control plane components (ClusterSizeOverride)
+
 ## Observe and debug
 
 ### Check RP pod logs
@@ -84,7 +134,7 @@ kubectl logs deployment/aro-hcp-backend -c aro-hcp-backend -n aro-hcp -f
 ### Check CS pod logs
 
 ```bash
-kubectl logs deployment/clusters-service -c service -f
+kubectl logs deployment/clusters-service -c service -n clusters-service -f
 ```
 
 ### Check cluster state in CS

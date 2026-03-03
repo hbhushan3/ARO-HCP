@@ -1,13 +1,13 @@
-# {{- if .Values.database.containerizedDb }}
+# {{- if not .Values.database.azureDb }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: maestro-db
-  namespace: '{{ .Release.Namespace  }}'
+  namespace: '{{ .Release.Namespace }}'
 spec:
   accessModes:
   - ReadWriteOnce
   resources:
     requests:
-      storage: '{{ .Values.database.containerizedDbPvcCapacity  }}'
+      storage: '{{ .Values.database.containerizedDbPvcCapacity }}'
 # {{- end }}

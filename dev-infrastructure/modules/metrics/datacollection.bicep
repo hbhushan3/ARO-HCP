@@ -1,11 +1,14 @@
+import { safeTake } from '../common.bicep'
+
 param azureMonitoringWorkspaceId string
 param hcpAzureMonitoringWorkspaceId string = ''
 param azureMonitorWorkspaceLocation string
 param aksClusterName string
 param prometheusPrincipalId string
 
-var dceName = take('MSProm-${azureMonitorWorkspaceLocation}-${aksClusterName}', 44)
-var dcrName = take('MSProm-${azureMonitorWorkspaceLocation}-${aksClusterName}', 44)
+var dceName = safeTake('MSProm-${azureMonitorWorkspaceLocation}-${aksClusterName}', 44)
+var dcrName = safeTake('MSProm-${azureMonitorWorkspaceLocation}-${aksClusterName}', 44)
+var hcpDcrName = safeTake('HCP-${azureMonitorWorkspaceLocation}-${aksClusterName}', 44)
 
 resource dce 'Microsoft.Insights/dataCollectionEndpoints@2022-06-01' = {
   name: dceName
@@ -60,7 +63,7 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2022-06-01' = {
 }
 
 resource hcpDcr 'Microsoft.Insights/dataCollectionRules@2022-06-01' = if (hcpAzureMonitoringWorkspaceId != '') {
-  name: 'HCP-${azureMonitorWorkspaceLocation}-${aksClusterName}'
+  name: hcpDcrName
   location: azureMonitorWorkspaceLocation
   kind: 'Linux'
   tags: {

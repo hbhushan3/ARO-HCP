@@ -26,20 +26,24 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/config/ev2config"
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+
 	"k8s.io/apimachinery/pkg/util/rand"
+
 	"sigs.k8s.io/yaml"
+
+	"github.com/Azure/ARO-Tools/config"
+	"github.com/Azure/ARO-Tools/config/ev2config"
 
 	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/render"
 	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/settings"
 )
 
-func DefaultOptions(outputDir string) *RawOptions {
+func DefaultOptions(outputDir string, url string) *RawOptions {
 	return &RawOptions{
-		OutputDir: outputDir,
+		OutputDir:        outputDir,
+		CentralRemoteUrl: url,
 	}
 }
 
@@ -48,6 +52,7 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 	cmd.Flags().StringVar(&opts.DevSettingsFile, "dev-settings-file", opts.DevSettingsFile, "Validate only the combinations present in the settings file, using public production Ev2 contexts.")
 	cmd.Flags().StringVar(&opts.DigestFile, "digest-file", opts.DigestFile, "File holding digests of previously-rendered configurations to validate with.")
 	cmd.Flags().StringVar(&opts.OutputDir, "output-dir", opts.OutputDir, "Directory to output rendered configurations to.")
+	cmd.Flags().StringVar(&opts.CentralRemoteUrl, "central-remote-url", opts.CentralRemoteUrl, "Git URL for the central remote, used to calculate merge-base.")
 	cmd.Flags().BoolVar(&opts.Update, "update", opts.Update, "Update the digest file.")
 
 	for _, flag := range []string{
@@ -69,6 +74,7 @@ func BindOptions(opts *RawOptions, cmd *cobra.Command) error {
 type RawOptions struct {
 	ServiceConfigFile string
 	DevSettingsFile   string
+	CentralRemoteUrl  string
 
 	DigestFile string
 	OutputDir  string
@@ -91,6 +97,7 @@ type completedOptions struct {
 	Digests       *Digests
 	DevSettings   *settings.Settings
 
+	CentralRemoteUrl  string
 	OutputDir         string
 	ServiceConfigFile string
 	DigestFile        string
@@ -109,7 +116,6 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 		value *string
 	}{
 		{flag: "service-config-file", name: "service configuration file", value: &o.ServiceConfigFile},
-		{flag: "digest-file", name: "digest file", value: &o.DigestFile},
 		{flag: "output-dir", name: "output directory", value: &o.OutputDir},
 	} {
 		if item.value == nil || *item.value == "" {
@@ -125,9 +131,13 @@ func (o *RawOptions) Validate() (*ValidatedOptions, error) {
 }
 
 func (o *ValidatedOptions) Complete() (*Options, error) {
-	d, err := LoadDigests(o.DigestFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load digests: %w", err)
+	var d *Digests
+	if o.DigestFile != "" {
+		var err error
+		d, err = LoadDigests(o.DigestFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load digests: %w", err)
+		}
 	}
 
 	var s *settings.Settings
@@ -149,6 +159,7 @@ func (o *ValidatedOptions) Complete() (*Options, error) {
 			ServiceConfig:     c,
 			ServiceConfigFile: o.ServiceConfigFile,
 			DevSettings:       s,
+			CentralRemoteUrl:  o.CentralRemoteUrl,
 			Digests:           d,
 			OutputDir:         o.OutputDir,
 			DigestFile:        o.DigestFile,
@@ -211,10 +222,11 @@ func (opts *Options) ValidateServiceConfig(ctx context.Context) error {
 			}
 
 			contexts[env.Cloud][env.Environment] = append(contexts[env.Cloud][env.Environment], RegionContext{
-				Region:            env.Region,
-				Ev2Cloud:          env.Ev2Cloud,
-				RegionShortSuffix: env.RegionShortSuffix,
-				Stamp:             env.Stamp,
+				Region:              env.Region,
+				Ev2Cloud:            env.Ev2Cloud,
+				RegionShortOverride: env.RegionShortOverride,
+				RegionShortSuffix:   env.RegionShortSuffix,
+				Stamp:               env.Stamp,
 			})
 		}
 	}
@@ -227,15 +239,16 @@ func (opts *Options) ValidateServiceConfig(ctx context.Context) error {
 		opts.OutputDir,
 		opts.Update,
 		opts.DigestFile,
-		"https://github.com/Azure/ARO-HCP.git",
+		opts.CentralRemoteUrl,
 	)
 }
 
 type RegionContext struct {
-	Region            string
-	Ev2Cloud          string
-	RegionShortSuffix string
-	Stamp             int
+	Region              string
+	Ev2Cloud            string
+	RegionShortOverride string
+	RegionShortSuffix   string
+	Stamp               int
 }
 
 func ValidateServiceConfig(
@@ -302,15 +315,18 @@ func ValidateServiceConfig(
 				for key, into := range map[string]*string{
 					"regionShortName": &replacements.RegionShortReplacement,
 				} {
-					value, ok := ev2Cfg.GetByPath(key)
-					if !ok {
-						return fmt.Errorf("%s %q not found in ev2 config", prefix, key)
+					value, err := ev2Cfg.GetByPath(key)
+					if err != nil {
+						return fmt.Errorf("%s %q not found in ev2 config: %w", prefix, key, err)
 					}
 					str, ok := value.(string)
 					if !ok {
 						return fmt.Errorf("%s %q is not a string", prefix, key)
 					}
 					*into = str
+				}
+				if regionCtx.RegionShortOverride != "" {
+					replacements.RegionShortReplacement = regionCtx.RegionShortOverride
 				}
 				if regionCtx.RegionShortSuffix != "" {
 					replacements.RegionShortReplacement += regionCtx.RegionShortSuffix
@@ -321,14 +337,9 @@ func ValidateServiceConfig(
 					return fmt.Errorf("%s failed to get resolver: %w", prefix, err)
 				}
 
-				rawCfg, err := resolver.GetRegionConfiguration(region)
+				cfg, err := resolver.GetRegionConfiguration(region)
 				if err != nil {
 					return fmt.Errorf("%s failed to get region config: %w", prefix, err)
-				}
-
-				cfg, ok := config.InterfaceToConfiguration(rawCfg)
-				if !ok {
-					return fmt.Errorf("%s: invalid configuration", prefix)
 				}
 
 				var schemaResolutionErr error
@@ -361,6 +372,9 @@ func ValidateServiceConfig(
 				currentDigests.Clouds[cloud].Environments[environment].Regions[region] = hex.EncodeToString(hashBytes)
 			}
 		}
+	}
+	if digests == nil {
+		return nil
 	}
 	for cloud, environments := range digests.Clouds {
 		if _, ok := currentDigests.Clouds[cloud]; !ok && !update {

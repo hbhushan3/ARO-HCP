@@ -3,18 +3,167 @@
   "title": "Generated schema for Root",
   "type": "object",
   "definitions": {
+    "namespaceName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "description": "A valid RFC1123 DNS label. Must start and end with a lowercase letter or number, and can contain hyphens in between."
+    },
+    "serviceAccountName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 243,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+      "description": "A valid RFC1123 DNS subdomain. Multiple RFC1123 DNS label devided by a dot."
+    },
+    "intOrString": {
+      "description": "THIS IS CURRENTLY NOT COMPATIBLE WITH SERVICE-STATUS. IntOrString is a type that can hold an int32 or a string.  When used in JSON or YAML marshalling and unmarshalling, it produces or consumes the inner type. This allows you to have, for example, a JSON field that can accept a name or number.",
+      "format": "int-or-string",
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "entraApplication": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the application. Needs to be unique within the tenant. https://eng.ms/docs/microsoft-security/identity/auth/auth-sts-protocols/ests/ests-troubleshooting-guides/tsgs/3p-apps-build-out-automation/gotchas-and-known-issues"
+        },
+        "useSNI": {
+          "type": "boolean"
+        },
+        "ownerIds": {
+          "$ref": "#/definitions/csv"
+        },
+        "manage": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "ownerIds"
+      ]
+    },
+    "semVer": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "semVerWithPrerelease": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "k8sRollingUpdateDeploymentStrategy": {
+      "type": "object",
+      "description": "Spec to control the desired behavior of rolling update.",
+      "properties": {
+        "maxSurge": {
+          "description": "The maximum number of pods that can be scheduled above the desired number of pods. Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%). This can not be 0 if MaxUnavailable is 0. Absolute number is calculated from percentage by rounding up. Defaults to 25%. Example: when this is set to 30%, the new ReplicaSet can be scaled up immediately when the rolling update starts, such that the total number of old and new pods do not exceed 130% of desired pods. Once old pods have been killed, new ReplicaSet can be scaled up further, ensuring that total number of pods running at any time during the update is at most 130% of desired pods.",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxUnavailable": {
+          "description": "The maximum number of pods that can be unavailable during the update. Value can be an absolute number (ex: 5) or a percentage of desired pods (ex: 10%). Absolute number is calculated from percentage by rounding down. This can not be 0 if MaxSurge is 0. Defaults to 25%. Example: when this is set to 30%, the old ReplicaSet can be scaled down to 70% of desired pods immediately when the rolling update starts. Once new pods are ready, old ReplicaSet can be scaled down further, followed by scaling up the new ReplicaSet, ensuring that the total number of pods available at all times during the update is at least 70% of desired pods.",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "k8sDeploymentStrategy": {
+      "type": "object",
+      "properties": {
+        "rollingUpdate": {
+          "description": "Rolling update config params",
+          "allOf": [
+            {
+              "$ref": "#/definitions/k8sRollingUpdateDeploymentStrategy"
+            }
+          ]
+        }
+      }
+    },
+    "k8sDeployment": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "$ref": "#/definitions/namespaceName"
+        },
+        "serviceAccountName": {
+          "$ref": "#/definitions/serviceAccountName"
+        },
+        "replicas": {
+          "type": "number",
+          "minimum": 1
+        },
+        "deploymentStrategy": {
+          "$ref": "#/definitions/k8sDeploymentStrategy"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "serviceAccountName"
+      ]
+    },
+    "icmConnection": {
+      "type": "object",
+      "properties": {
+        "actionGroupName": {
+          "type": "string",
+          "description": "Name of the ICM Action Group"
+        },
+        "actionGroupShortName": {
+          "type": "string",
+          "maxLength": 8,
+          "description": "Name of the ICM Action Group"
+        },
+        "routingId": {
+          "type": "string",
+          "description": "ICM routing ID"
+        },
+        "automitigationEnabled": {
+          "type": "string",
+          "description": "ICM automitigation enabled ID"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "actionGroupName",
+        "actionGroupShortName",
+        "routingId",
+        "automitigationEnabled"
+      ]
+    },
     "postgresName": {
       "type": "string",
       "minLength": 3,
       "maxLength": 44,
-      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]$",
       "description": "Server name must only contain lowercase letters, numbers, and hyphens. The server name must not start or end in a hyphen. Name must be between 3 be 63 characters long but we limited to 44 characters so we have a future option to use NSP: https://learn.microsoft.com/en-us/azure/private-link/network-security-perimeter-concepts"
     },
     "keyVaultName": {
       "type": "string",
       "minLength": 3,
       "maxLength": 24,
-      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*$",
       "description": "A KV name must be between 3-24 alphanumeric characters. The name must begin with a letter, end with a letter or digit, and not contain consecutive hyphens."
     },
     "operatorConfig": {
@@ -27,6 +176,145 @@
       "additionalProperties": false,
       "required": [
         "roleNames"
+      ]
+    },
+    "clusterPrincipals": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "tenantId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "id",
+        "type",
+        "role",
+        "tenantId"
+      ]
+    },
+    "dstsGroups": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description"
+      ]
+    },
+    "certificateRef": {
+      "type": "object",
+      "properties": {
+        "keyVault": {
+          "$ref": "#/definitions/keyVaultName"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyVault",
+        "name"
+      ]
+    },
+    "genevaLogsAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accountName": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9]*$"
+        },
+        "secretName": {
+          "description": "Name of the cerificate created and hostname in cert. Must match host in SAN",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Geneva logs account namespace",
+          "type": "string"
+        },
+        "san": {
+          "description": "Geneva logs account certificate SAN",
+          "type": "string"
+        },
+        "configVersion": {
+          "description": "Geneva logs account namespace configuration version",
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountName",
+        "secretName",
+        "namespace",
+        "san",
+        "configVersion"
+      ]
+    },
+    "registrationConfig": {
+      "additionalProperties": false,
+      "type": "object",
+      "patternProperties": {
+        "^.+$": {
+          "type": "object",
+          "properties": {
+            "poll": {
+              "type": "boolean"
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "poll": {
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "audit": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "connectSocket": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "connectSocket"
       ]
     },
     "tracing": {
@@ -59,12 +347,31 @@
         },
         "zoneRedundantMode": {
           "$ref": "#/definitions/zoneRedundantMode"
+        },
+        "untaggedImagesRetention": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "days": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 365,
+              "description": "Number of days to retain untagged images"
+            }
+          },
+          "required": [
+            "enabled",
+            "days"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
-        "zoneRedundantMode"
+        "zoneRedundantMode",
+        "untaggedImagesRetention"
       ]
     },
     "nsp": {
@@ -74,7 +381,7 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 80,
-          "pattern": "^[a-z0-9][a-z0-9_-]*[a-z0-9_]$"
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9_]$"
         },
         "accessMode": {
           "type": "string",
@@ -103,18 +410,29 @@
         },
         "softDelete": {
           "type": "boolean"
+        },
+        "tagKey": {
+          "type": "string"
+        },
+        "tagValue": {
+          "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "name",
         "private",
-        "softDelete"
+        "softDelete",
+        "tagKey",
+        "tagValue"
       ]
     },
     "aksAgentPool": {
       "type": "object",
       "properties": {
+        "name": {
+          "type": "string"
+        },
         "maxCount": {
           "type": "number"
         },
@@ -127,40 +445,27 @@
         "vmSize": {
           "type": "string"
         },
-        "azCount": {
+        "poolCount": {
           "type": "number"
+        },
+        "zones": {
+          "$ref": "#/definitions/zones",
+          "description": "Zones to use for the pools."
+        },
+        "zoneRedundantMode": {
+          "$ref": "#/definitions/zoneRedundantMode"
         }
       },
       "additionalProperties": false,
       "required": [
+        "name",
         "maxCount",
         "minCount",
         "osDiskSizeGB",
-        "vmSize"
-      ]
-    },
-    "aksLogConfig": {
-      "type": "object",
-      "properties": {
-        "namespace": {
-          "description": "Geneva logs account namespace",
-          "type": "string"
-        },
-        "san": {
-          "description": "Geneva logs account certificate SAN",
-          "type": "string"
-        },
-        "configVersion": {
-          "description": "Geneva logs account namespace configuration version",
-          "pattern": "^[0-9]+$",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "namespace",
-        "san",
-        "configVersion"
+        "vmSize",
+        "poolCount",
+        "zones",
+        "zoneRedundantMode"
       ]
     },
     "aksConfig": {
@@ -171,7 +476,7 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 44,
-          "pattern": "^[a-z0-9][a-z0-9_-]*[a-z0-9]$",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*[a-zA-Z0-9]$",
           "description": "The name needs to be between 3-63 characters and can contain only letters, numbers, underscores, and hyphens. The name must start and end with a letter or number. We limit the name to 44 characters so we have a future option to use NSP: https://learn.microsoft.com/en-us/azure/private-link/network-security-perimeter-concepts"
         },
         "vnetAddressPrefix": {
@@ -201,20 +506,7 @@
           ]
         },
         "etcd": {
-          "type": "object",
-          "properties": {
-            "kvName": {
-              "$ref": "#/definitions/keyVaultName"
-            },
-            "kvSoftDelete": {
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "kvName",
-            "kvSoftDelete"
-          ]
+          "$ref": "#/definitions/keyVault"
         },
         "userAgentPool": {
           "$ref": "#/definitions/aksAgentPool"
@@ -228,7 +520,10 @@
         "clusterOutboundIPAddressIPTags": {
           "$ref": "#/definitions/keyColonValueCSV"
         },
-        "enableSwiftV2": {
+        "enableSwiftV2Vnet": {
+          "type": "boolean"
+        },
+        "enableSwiftV2Nodepools": {
           "type": "boolean"
         }
       },
@@ -257,8 +552,8 @@
           "type": "string"
         },
         "digest": {
-            "type": "string",
-            "pattern": "^$|^sha256:[a-fA-F0-9]{64}$"
+          "type": "string",
+          "pattern": "^$|^sha256:[a-fA-F0-9]{64}$"
         }
       },
       "required": [
@@ -266,9 +561,67 @@
         "digest"
       ]
     },
+    "containerImageSha": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string",
+          "pattern": "^$|^[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": [
+        "repository",
+        "sha"
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)$"
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)|(NONE)$"
+        }
+      }
+    },
+    "containerResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "$ref": "#/definitions/resources"
+        },
+        "limits": {
+          "$ref": "#/definitions/resources"
+        }
+      }
+    },
     "keyColonValueCSV": {
       "type": "string",
       "pattern": "^$|^[\\w-\\.]+:[\\w\\/-]+(,[\\w-\\.]+:[\\w\\/-]+)*$"
+    },
+    "csv": {
+      "type": "string",
+      "pattern": "^$|^[\\w-\\.]+(,[\\w-\\.]+)*$"
+    },
+    "zones": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^$|^\\w+(?:,\\w+)*$"
+        }
+      ]
     },
     "certificateIssuer": {
       "type": "string",
@@ -276,6 +629,41 @@
         "Self",
         "OneCertV2-PublicCA",
         "OneCertV2-PrivateCA"
+      ]
+    },
+    "backendMaestroConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sourceEnvironmentIdentifier": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^[a-z]+$",
+          "description": "The source environment identifier must be between 1 and 10 characters and can contain only lowercase letters"
+        }
+      },
+      "required": [
+        "sourceEnvironmentIdentifier"
+      ]
+    },
+    "imageArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "adoProject": {
+          "type": "string"
+        },
+        "artifactName": {
+          "type": "string"
+        },
+        "buildId": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "adoProject",
+        "artifactName",
+        "buildId"
       ]
     },
     "zoneRedundantMode": {
@@ -293,7 +681,7 @@
         "namespace": {
           "type": "string"
         },
-        "namespaceLabel": {
+        "namespaceNetworkPolicyGroup": {
           "type": "string"
         },
         "prometheusOperator": {
@@ -301,11 +689,11 @@
           "additionalProperties": false,
           "properties": {
             "image": {
-              "$ref": "#/definitions/containerImage"
+              "$ref": "#/definitions/containerImageSha"
             },
             "version": {
               "type": "string"
-            }          
+            }
           }
         },
         "prometheusSpec": {
@@ -313,7 +701,7 @@
           "additionalProperties": false,
           "properties": {
             "image": {
-              "$ref": "#/definitions/containerImage"
+              "$ref": "#/definitions/containerImageSha"
             },
             "version": {
               "type": "string"
@@ -323,6 +711,17 @@
             },
             "shards": {
               "type": "number"
+            },
+            "resources": {
+              "$ref": "#/definitions/containerResources"
+            },
+            "retention": {
+              "type": "string",
+              "pattern": "^(0|(([0-9]+)y)?(([0-9]+)w)?(([0-9]+)d)?(([0-9]+)h)?(([0-9]+)m)?(([0-9]+)s)?(([0-9]+)ms)?)$"
+            },
+            "retentionSize": {
+              "type": "string",
+              "pattern": "^$|^(0|([0-9]*[.])?[0-9]+((K|M|G|T|E|P)i?)?B)$"
             }
           }
         },
@@ -330,16 +729,186 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "image" :{
+            "image": {
+              "$ref": "#/definitions/containerImageSha"
+            }
+          }
+        },
+        "kubeStateMetrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
               "$ref": "#/definitions/containerImage"
             }
           }
+        },
+        "admissionWebhook": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "patch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "$ref": "#/definitions/containerImageSha"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "properties": {
+        "deploy": {
+          "type": "boolean"
+        },
+        "name": {
+          "$ref": "#/definitions/postgresName"
+        },
+        "private": {
+          "type": "boolean"
+        },
+        "serverStorageSizeGB": {
+          "type": "integer"
+        },
+        "serverVersion": {
+          "type": "string"
+        },
+        "minTLSVersion": {
+          "type": "string",
+          "enum": [
+            "TLSV1.2",
+            "TLSV1.3"
+          ]
+        },
+        "databaseName": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "zoneRedundantMode": {
+          "$ref": "#/definitions/zoneRedundantMode"
+        },
+        "backupRetentionDays": {
+          "type": "integer",
+          "description": "Number of days to retain backups for the PostgreSQL server."
+        },
+        "geoRedundantBackup": {
+          "type": "boolean",
+          "description": "Enable geo-redundant backups for the PostgreSQL server."
+        },
+        "containerizedDb": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": {
+              "type": "string"
+            },
+            "pvcCapacity": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "deploy",
+        "name",
+        "private",
+        "serverStorageSizeGB",
+        "serverVersion",
+        "minTLSVersion",
+        "databaseName",
+        "zoneRedundantMode",
+        "backupRetentionDays",
+        "geoRedundantBackup"
+      ]
+    },
+    "subscriptionMetadata": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "airsRegisteredUserPrincipalId": {
+          "type": "string"
+        },
+        "certificateDomains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "providers": {
+          "$ref": "#/definitions/registrationConfig"
+        },
+        "usePlannedQuota": {
+          "type": "boolean"
+        },
+        "featureFlags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "displayName"
+      ]
+    },
+    "storageAccount": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9]{3,24}$"
+        },
+        "zoneRedundantMode": {
+          "$ref": "#/definitions/zoneRedundantMode"
+        },
+        "public": {
+          "type": "boolean",
+          "description": "Whether the storage account is public or private. If private, it can only be accessed via Azure Front Door"
+        },
+        "privateLinkLocation": {
+          "type": "string",
+          "description": "The location of the storage account private link. Not every region supports private links so we need to be able to override the default location."
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "zoneRedundantMode",
+        "public"
+      ]
+    },
+    "hcpBackups": {
+      "type": "object",
+      "properties": {
+        "storageAccount": {
+          "$ref": "#/definitions/storageAccount"
+        },
+        "storageAccountContainerName": {
+          "type": "string"
         }
       }
     }
   },
   "properties": {
-    "aroDevopsMsiId": {
+    "environmentName": {
+      "type": "string"
+    },
+    "azureGeoShortId": {
       "type": "string"
     },
     "tenantId": {
@@ -348,9 +917,31 @@
     "cloud": {
       "type": "string"
     },
+    "cloudEnvironmentName": {
+      "description": "The name of the Azure cloud environment. This conceptually represents the same cloud as the `cloud` attribute but it uses a different naming scheme. Different software in Azure expects different naming schemes representing the same cloud. For example, Secret Store CSI Provider Azure follows this naming scheme and the accepted values for that component can be found in https://github.com/Azure/secrets-store-csi-driver-provider-azure/blob/master/website/content/en/getting-started/usage/_index.md#create-your-own-secretproviderclass-object under the `cloudName` attribute",
+      "type": "string",
+      "enum": [
+        "AzurePublicCloud",
+        "AzureUSGovernmentCloud",
+        "AzureChinaCloud",
+        "AzureGermanCloud",
+        "AzureStackCloud"
+      ]
+    },
+    "azureRegionAvailabilityZoneCount": {
+      "type": "integer"
+    },
     "kvCertOfficerPrincipalId": {
       "type": "string",
       "description": "The principal ID of the cert officer that will be used to manage KV certificate issuers"
+    },
+    "kvCertAccessPrincipalId": {
+      "type": "string",
+      "description": "The principal ID of the cert officer that will be used to access KV certificate"
+    },
+    "kvCertAccessRoleId": {
+      "type": "string",
+      "description": "The Role ID used for cert access"
     },
     "dns": {
       "type": "object",
@@ -363,10 +954,6 @@
           "type": "string",
           "description": "The parent DNS zone name for regional HCP cluster DNS zones"
         },
-        "cxParentZoneDelegation": {
-          "type": "boolean",
-          "description": "Whether to manage the CX parent zone delegation on the parents parent."
-        },
         "svcParentZoneName": {
           "type": "string",
           "description": "The parent DNS zone name for regional ARO-HCP infrastructure, e.g. the RP"
@@ -378,6 +965,10 @@
         "parentZoneName": {
           "type": "string",
           "description": "The global parent DNS zone name"
+        },
+        "globalCertificatesDomain": {
+          "type": "string",
+          "description": "The global certificates domain"
         }
       },
       "additionalProperties": false,
@@ -385,28 +976,46 @@
         "baseDnsZoneRG",
         "cxParentZoneName",
         "svcParentZoneName",
-        "regionalSubdomain"
+        "regionalSubdomain",
+        "globalCertificatesDomain"
       ]
     },
     "acm": {
       "type": "object",
       "properties": {
+        "operator": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "bundle": {
+              "$ref": "#/definitions/containerImage"
+            }
+          },
+          "required": [
+            "bundle"
+          ]
+        },
         "mce": {
           "type": "object",
           "properties": {
-            "pauseReconciliation": {
-              "type": "boolean",
-              "description": "Pause reconciliation of ACM MCE resources like CRDs and deployments."
+            "version": {
+              "type": "string"
+            },
+            "bundle": {
+              "$ref": "#/definitions/containerImage"
             }
           },
           "additionalProperties": false,
           "required": [
-            "pauseReconciliation"
+            "bundle"
           ]
         }
       },
       "additionalProperties": false,
       "required": [
+        "operator",
         "mce"
       ]
     },
@@ -421,10 +1030,18 @@
         },
         "remotePhaseManager": {
           "$ref": "#/definitions/containerImage"
+        },
+        "managedIdentityName": {
+          "type": "string"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
         }
       },
       "additionalProperties": false,
       "required": [
+        "managedIdentityName",
+        "k8s",
         "imagePackage",
         "imageManager",
         "remotePhaseManager"
@@ -433,10 +1050,21 @@
     "clustersService": {
       "type": "object",
       "properties": {
+        "deployDebugJobs": {
+          "type": "boolean",
+          "description": "If true, debug jobs will be deployed to the cluster. The jobs will be used to debug the CS service."
+        },
         "environment": {
           "type": "string",
           "minLength": 1,
           "maxLength": 10
+        },
+        "denyAssignments": {
+          "type": "string",
+          "enum": [
+            "enabled",
+            "disabled"
+          ]
         },
         "image": {
           "$ref": "#/definitions/containerImage"
@@ -448,108 +1076,186 @@
           "type": "string",
           "description": "The name of the MSI that will be used by CS to interact with Azure"
         },
+        "provisionShardClusterLimit": {
+          "type": "integer",
+          "description": "The maximum number of HCPs that can be placed on an MC, sadly not configurable per MC"
+        },
         "k8s": {
-          "type": "object",
-          "properties": {
-            "namespace": {
-              "type": "string"
-            },
-            "serviceAccountName": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "namespace",
-            "serviceAccountName"
-          ]
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "batchProcessesDryRun": {
+          "type": "boolean",
+          "description": "If true, batch processes will only log what they would do, without making any changes."
+        },
+        "batchProcesses": {
+          "type": "string",
+          "description": "A comma-separated list of batch processes to execute. If set to an empty string, no batch processes are executed. No whitespace characters are allowed before or after the commas, or at the beginning or end of the list."
         },
         "postgres": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "deploy": {
-              "type": "boolean"
-            },
-            "name": {
-              "$ref": "#/definitions/postgresName"
-            },
-            "private": {
-              "type": "boolean"
-            },
-            "minTLSVersion": {
-              "type": "string",
-              "enum": [
-                "TLSV1.2",
-                "TLSV1.3"
-              ]
-            },
-            "zoneRedundantMode": {
-              "$ref": "#/definitions/zoneRedundantMode"
-            }
-          },
-          "required": [
-            "deploy",
-            "name",
-            "private",
-            "minTLSVersion",
-            "zoneRedundantMode"
-          ]
+          "$ref": "#/definitions/postgres"
         },
         "azureOperatorsManagedIdentities": {
           "type": "object",
           "properties": {
-            "clusterApiAzure": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "controlPlane": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "cloudControllerManager": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "ingress": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "diskCsiDriver": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "fileCsiDriver": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "imageRegistry": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "cloudNetworkConfig": {
-              "$ref": "#/definitions/operatorConfig"
-            },
-            "kms": {
-              "$ref": "#/definitions/operatorConfig"
+            "roleSetName": {
+              "type": "string",
+              "enum": [
+                "dev",
+                "public",
+                "ff"
+              ],
+              "description": "The role set name refers to a particular cloud specific set of operator role definitions, found in the CS values.yaml file"
             }
           },
           "additionalProperties": false,
           "required": [
-            "clusterApiAzure",
-            "controlPlane",
-            "cloudControllerManager",
-            "ingress",
-            "diskCsiDriver",
-            "fileCsiDriver",
-            "imageRegistry",
-            "cloudNetworkConfig",
-            "kms"
+            "roleSetName"
           ]
+        },
+        "azureRuntimeConfig": {
+          "type": "object",
+          "properties": {
+            "tlsCertificatesIssuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "tlsCertificatesIssuer"
+          ]
+        },
+        "ocpVersions": {
+          "type": "object",
+          "properties": {
+            "defaultVersion": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "$ref": "#/definitions/semVer"
+                }
+              },
+              "required": [
+                "version"
+              ],
+              "additionalProperties": false
+            },
+            "channelGroups": {
+              "type": "object",
+              "properties": {
+                "stable": {
+                  "type": "object",
+                  "properties": {
+                    "minVersion": {
+                      "$ref": "#/definitions/semVer"
+                    },
+                    "maxVersion": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/definitions/semVer"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^$"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "minVersion",
+                    "maxVersion"
+                  ],
+                  "additionalProperties": false
+                },
+                "candidate": {
+                  "type": "object",
+                  "properties": {
+                    "minVersion": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/definitions/semVerWithPrerelease"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^$"
+                        }
+                      ]
+                    },
+                    "maxVersion": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/definitions/semVerWithPrerelease"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^$"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "minVersion",
+                    "maxVersion"
+                  ],
+                  "additionalProperties": false
+                },
+                "nightly": {
+                  "type": "object",
+                  "properties": {
+                    "minVersion": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/definitions/semVerWithPrerelease"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^$"
+                        }
+                      ]
+                    },
+                    "maxVersion": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/definitions/semVerWithPrerelease"
+                        },
+                        {
+                          "type": "string",
+                          "pattern": "^$"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "minVersion",
+                    "maxVersion"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "stable"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "defaultVersion",
+            "channelGroups"
+          ],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false,
       "required": [
         "environment",
+        "denyAssignments",
         "image",
         "managedIdentityName",
         "k8s",
         "azureOperatorsManagedIdentities",
         "postgres",
-        "tracing"
+        "tracing",
+        "azureRuntimeConfig",
+        "ocpVersions"
       ]
     },
     "cxKeyVault": {
@@ -610,22 +1316,142 @@
         },
         "tracing": {
           "$ref": "#/definitions/tracing"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the backend to interact with Azure"
+        },
+        "azureRuntimeConfig": {
+          "type": "object",
+          "properties": {
+            "tlsCertificatesIssuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "tlsCertificatesIssuer"
+          ]
+        },
+        "maestro": {
+          "$ref": "#/definitions/backendMaestroConfig"
         }
       },
       "additionalProperties": false,
       "required": [
         "image",
-        "tracing"
+        "tracing",
+        "k8s",
+        "managedIdentityName",
+        "azureRuntimeConfig",
+        "maestro"
       ]
     },
-    "frontend": {
+    "sessiongate": {
       "type": "object",
       "properties": {
         "image": {
           "$ref": "#/definitions/containerImage"
         },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the sessiongate to interact with Azure"
+        },
+        "cert": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 127,
+              "pattern": "^[a-zA-Z0-9-]+$"
+            },
+            "issuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "issuer"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "k8s",
+        "managedIdentityName",
+        "cert"
+      ]
+    },
+    "adminApi": {
+      "type": "object",
+      "properties": {
+        "audit": {
+          "$ref": "#/definitions/audit"
+        },
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the frontend to interact with Azure"
+        },
+        "cert": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 127,
+              "pattern": "^[a-zA-Z0-9-]+$"
+            },
+            "issuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "issuer"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "audit",
+        "image",
+        "k8s",
+        "managedIdentityName",
+        "cert"
+      ]
+    },
+    "frontend": {
+      "type": "object",
+      "properties": {
+        "audit": {
+          "$ref": "#/definitions/audit"
+        },
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        },
         "tracing": {
           "$ref": "#/definitions/tracing"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the frontend to interact with Azure"
         },
         "cosmosDB": {
           "type": "object",
@@ -641,6 +1467,15 @@
             },
             "private": {
               "type": "boolean"
+            },
+            "resourceContainerMaxScale": {
+              "type": "integer"
+            },
+            "billingContainerMaxScale": {
+              "type": "integer"
+            },
+            "locksContainerMaxScale": {
+              "type": "integer"
             },
             "zoneRedundantMode": {
               "$ref": "#/definitions/zoneRedundantMode"
@@ -678,7 +1513,108 @@
         "image",
         "cosmosDB",
         "cert",
-        "tracing"
+        "tracing",
+        "k8s",
+        "managedIdentityName"
+      ]
+    },
+    "billing": {
+      "type": "object",
+      "properties": {
+        "rg": {
+          "$ref": "#/definitions/resourceGroupName"
+        },
+        "aub": {
+          "type": "object",
+          "properties": {
+            "accountName": {
+              "type": "string"
+            },
+            "cloudSuffix": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "accountName",
+            "cloudSuffix"
+          ]
+        },
+        "pav2": {
+          "type": "object",
+          "properties": {
+            "cloudName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cloudName"
+          ]
+        },
+        "kusto": {
+          "type": "object",
+          "properties": {
+            "sku": {
+              "type": "string"
+            },
+            "clusterName": {
+              "type": "string"
+            },
+            "clusterPrincipals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/clusterPrincipals"
+              }
+            },
+            "dstsGroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/dstsGroups"
+              }
+            },
+            "vmUsageStaleThreshold": {
+              "type": "string",
+              "description": "If the latest VM usage event in kusto is older than this threshold compared to the current time, skip deletion checks for billing documents. 0 to disable this check."
+            }
+          },
+          "required": [
+            "sku",
+            "clusterName",
+            "clusterPrincipals",
+            "dstsGroups",
+            "vmUsageStaleThreshold"
+          ]
+        },
+        "eventHub": {
+          "type": "object",
+          "properties": {
+            "namespace": {
+              "type": "string"
+            },
+            "subscriptionId": {
+              "type": "string"
+            },
+            "resourceGroupName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "namespace",
+            "subscriptionId",
+            "resourceGroupName"
+          ]
+        },
+        "imageArtifact": {
+          "$ref": "#/definitions/imageArtifact"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rg",
+        "aub",
+        "pav2",
+        "kusto",
+        "eventHub",
+        "imageArtifact"
       ]
     },
     "ev2": {
@@ -689,12 +1625,19 @@
           "additionalProperties": false,
           "properties": {
             "certificate": {
-              "type": "string"
+              "$ref": "#/definitions/certificateRef"
             },
             "applicationId": {
               "type": "string"
+            },
+            "dstsHost": {
+              "type": "string"
             }
-          }
+          },
+          "required": [
+            "certificate",
+            "applicationId"
+          ]
         }
       },
       "additionalProperties": false,
@@ -749,12 +1692,18 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "adminCertName": {
+              "type": "string"
+            },
+            "adminCertificateDomain": {
+              "type": "string"
+            },
             "administrators": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
                 "alias": {
-                  "type": "string"
+                  "type": "array"
                 },
                 "securityGroup": {
                   "type": "string"
@@ -764,6 +1713,15 @@
                 "alias",
                 "securityGroup"
               ]
+            },
+            "manageCertificates": {
+              "type": "boolean"
+            },
+            "certificateIssuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            },
+            "certificateDomain": {
+              "type": "string"
             },
             "typeName": {
               "type": "string"
@@ -785,51 +1743,75 @@
               ]
             },
             "cluster": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "accountName": {
-                  "type": "string",
-                  "minLength": 6,
-                  "maxLength": 32,
-                  "pattern": "^[a-zA-Z][a-zA-Z0-9]*$"
-                },
-                "accountCert": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "accountName",
-                "accountCert"
-              ]
+              "$ref": "#/definitions/genevaLogsAccount"
             },
             "rp": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "accountName": {
-                  "type": "string",
-                  "minLength": 6,
-                  "maxLength": 32,
-                  "pattern": "^[a-zA-Z][a-zA-Z0-9]*$"
-                },
-                "accountCert": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "accountName",
-                "accountCert"
-              ]
+              "$ref": "#/definitions/genevaLogsAccount"
             }
           },
           "required": [
             "administrators",
             "typeName",
-            "environment",
-            "cluster",
-            "rp"
+            "environment"
           ]
+        },
+        "actions": {
+          "type": "object",
+          "description": "Geneva Actions related configuration",
+          "additionalProperties": false,
+          "required": [
+            "serviceTag",
+            "keyVault",
+            "certificate",
+            "allowedAcisExtensions",
+            "genevaActionsPrincipalId",
+            "application"
+          ],
+          "properties": {
+            "serviceTag": {
+              "type": "string",
+              "description": "The Service Tag used by Geneva Actions for their egress traffic."
+            },
+            "keyVault": {
+              "$ref": "#/definitions/keyVault",
+              "description": "Here we store the certificate for the app defined in .application"
+            },
+            "certificate": {
+              "type": "object",
+              "description": "This is the certificate for the app defined in .application",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "issuer": {
+                  "$ref": "#/definitions/certificateIssuer"
+                },
+                "manage": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "issuer",
+                "manage"
+              ]
+            },
+            "allowedAcisExtensions": {
+              "type": "string"
+            },
+            "genevaActionsPrincipalId": {
+              "type": "string",
+              "description": "This is the principal ID of the MSFT owned Geneva Actions identity that will call into our Geneva Actions."
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "application": {
+              "$ref": "#/definitions/entraApplication",
+              "description": "This is the app our Geneva Actions will use to talk to the Admin API"
+            }
+          }
         }
       },
       "additionalProperties": false,
@@ -837,66 +1819,293 @@
         "principalId",
         "resourceContributor",
         "metrics",
-        "logs"
+        "logs",
+        "actions"
       ]
     },
     "kusto": {
       "type": "object",
       "properties": {
+        "rg": {
+          "type": "string"
+        },
+        "manageInstance": {
+          "type": "boolean"
+        },
+        "sku": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string"
+        },
+        "serviceLogsDatabase": {
+          "type": "string"
+        },
+        "hostedControlPlaneLogsDatabase": {
+          "type": "string"
+        },
+        "adminGroups": {
+          "type": "string"
+        },
+        "viewerGroups": {
+          "type": "string"
+        },
+        "enableAutoScale": {
+          "type": "boolean"
+        },
+        "autoScaleMin": {
+          "type": "integer"
+        },
+        "autoScaleMax": {
+          "type": "integer"
+        },
+        "kustoName": {
+          "type": "string",
+          "description": "Name of the kusto cluster. Must begin with a letter and contain between 4 and 22 lowercase alphanumeric characters.",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "minLength": 4,
+          "maxLength": 22
+        },
+        "auditLogsEventHub": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the Event Hub for AKS audit logs"
+            },
+            "namespace": {
+              "type": "string",
+              "description": "Name of the Audit logs Event Hub namespace"
+            },
+            "authRuleName": {
+              "type": "string",
+              "description": "Name of the authorization rule for the Event Hub for use by the aks clusters"
+            },
+            "kustoConsumerGroupName": {
+              "type": "string",
+              "description": "Name of the consumer group for Kusto data connection"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "namespace",
+            "authRuleName",
+            "kustoConsumerGroupName"
+          ]
+        },
         "resourceGroup": {
+          "description": "DEPRECATED, for backward compatibility only",
           "type": "string"
         },
         "cluster": {
+          "description": "DEPRECATED, for backward compatibility only",
           "type": "string"
+        },
+        "ingestionUrl": {
+          "description": "DEPRECATED, for backward compatibility only",
+          "type": "string"
+        },
+        "environmentName": {
+          "description": "DEPRECATED, for backward compatibility only",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "DEPRECATED, for backward compatibility only",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
       "required": [
-        "resourceGroup",
-        "cluster"
-      ]
-    },
-    "genevaActions": {
-      "type": "object",
-      "properties": {
-        "serviceTag": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "serviceTag"
+        "manageInstance",
+        "sku",
+        "tier",
+        "serviceLogsDatabase",
+        "hostedControlPlaneLogsDatabase",
+        "adminGroups",
+        "viewerGroups",
+        "kustoName",
+        "enableAutoScale",
+        "auditLogsEventHub"
       ]
     },
     "mise": {
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "deploy": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Whether to deploy MISE. Be careful where to enable MISE as it can't be deployed in non-MSFT tenants."
         },
-        "azureAdInstance": {
-          "type": "string"
+        "arm": {
+          "type": "object",
+          "properties": {
+            "policyLabel": {
+              "type": "string",
+              "description": "The label of the ARM policy."
+            },
+            "tenantId": {
+              "type": "string",
+              "description": "The tenant ID where the ARM application lives."
+            },
+            "applicationId": {
+              "type": "string",
+              "description": "The application ID of the ARM application."
+            },
+            "authorityFQDN": {
+              "type": "string",
+              "description": "The authority/issuer FQDN of the ARM applications auth tokens."
+            },
+            "audienceFQDN": {
+              "type": "string",
+              "description": "The audience FQDN of the ARM applications auth tokens."
+            }
+          },
+          "required": [
+            "policyLabel",
+            "tenantId",
+            "applicationId",
+            "authorityFQDN",
+            "audienceFQDN"
+          ]
         },
-        "firstPartyAppId": {
-          "type": "string"
+        "genevaActions": {
+          "type": "object",
+          "properties": {
+            "policyLabel": {
+              "type": "string",
+              "description": "The label of the Geneva Actions policy."
+            },
+            "authorityFQDN": {
+              "type": "string",
+              "description": "The authority/issuer FQDN of the Geneva Actions applications auth tokens."
+            },
+            "audienceFQDN": {
+              "type": "string",
+              "description": "The audience FQDN of the Geneva Actions applications auth tokens."
+            }
+          },
+          "required": [
+            "policyLabel",
+            "authorityFQDN",
+            "audienceFQDN"
+          ]
         },
-        "armAppId": {
-          "type": "string",
-          "description": "The valid app ID for mise, which is the ARM Application Id, this is common across all clouds (MSIT/AME/FF)"
+        "sessiongate": {
+          "type": "object",
+          "properties": {
+            "policyLabel": {
+              "type": "string",
+              "description": "The label of the Session Gate policy."
+            },
+            "authorityFQDN": {
+              "type": "string",
+              "description": "The authority/issuer FQDN of the Session Gate applications auth tokens."
+            },
+            "audience": {
+              "type": "string",
+              "description": "The audience of the Session Gate applications auth tokens."
+            }
+          },
+          "required": [
+            "policyLabel",
+            "authorityFQDN",
+            "audience"
+          ]
         },
         "image": {
           "$ref": "#/definitions/containerImage"
         },
-        "tenantId": {
-          "type": "string"
+        "tracing": {
+          "$ref": "#/definitions/tracing",
+          "description": "Tracing configuration for OTLP traces."
         }
       },
       "required": [
         "deploy",
         "image",
-        "azureAdInstance",
-        "firstPartyAppId",
-        "armAppId",
-        "tenantId"
+        "arm",
+        "genevaActions",
+        "sessiongate",
+        "tracing"
+      ]
+    },
+    "msiRp": {
+      "type": "object",
+      "properties": {
+        "dataPlaneAudienceResource": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dataPlaneAudienceResource"
+      ]
+    },
+    "msiCredentialsRefresher": {
+      "type": "object",
+      "properties": {
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the refresher"
+        },
+        "firstPartyAppClientId": {
+          "type": "string",
+          "description": "The client ID of the first party application that will be used by the refresher"
+        },
+        "earlyRefreshFrequency": {
+          "type": "string",
+          "description": "Early refresh interval before credential is eligible for refresh. For testing, 0 means no early refresh. Example: 24h"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        },
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "certificate": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "issuer": {
+              "$ref": "#/definitions/certificateIssuer"
+            },
+            "manage": {
+              "type": "boolean"
+            },
+            "commonName": {
+              "type": "string"
+            },
+            "sanDnsNames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "issuer",
+            "manage",
+            "commonName",
+            "sanDnsNames"
+          ]
+        },
+        "imageArtifact": {
+          "$ref": "#/definitions/imageArtifact"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "managedIdentityName",
+        "k8s",
+        "image",
+        "certificate",
+        "earlyRefreshFrequency",
+        "imageArtifact"
       ]
     },
     "global": {
@@ -909,22 +2118,39 @@
         "rg": {
           "$ref": "#/definitions/resourceGroupName"
         },
+        "billing": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rg": {
+              "$ref": "#/definitions/resourceGroupName"
+            },
+            "digest": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "rg",
+            "digest"
+          ]
+        },
         "subscription": {
-          "type": "string"
+          "$ref": "#/definitions/subscriptionMetadata"
         },
         "region": {
           "type": "string"
         },
         "globalMSIName": {
           "type": "string",
-          "description": "The name of the MSI that will be used for ev2"
+          "description": "The name of the MSI that will be used for deployments."
+        },
+        "contributorRoleId": {
+          "type": "string",
+          "description": "The ID of the role assignment given to the global MSI to deploy our service."
         },
         "safeDnsIntAppObjectId": {
           "type": "string",
           "description": "SafeDnsIntApplication object ID use to delegate child DNS. This is only required for MSFT INT and can be left empty for other targets"
-        },
-        "secretsToSyncDir": {
-          "type": "string"
         },
         "keyVault": {
           "$ref": "#/definitions/keyVault"
@@ -932,10 +2158,10 @@
       },
       "required": [
         "rg",
+        "billing",
         "subscription",
         "region",
-        "keyVault",
-        "secretsToSyncDir"
+        "keyVault"
       ]
     },
     "backplaneAPI": {
@@ -961,6 +2187,17 @@
         },
         "namespace": {
           "type": "string"
+        },
+        "sharedIngressIPTag": {
+          "type": "string",
+          "enum": [
+            "FirstPartyUsage=/aro-hcp-prod-inbound-customerapi",
+            "FirstPartyUsage=/NonProd",
+            ""
+          ]
+        },
+        "limitClusterSizes": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -989,7 +2226,6 @@
           "required": [
             "pullSecretName"
           ]
-
         },
         "ocMirror": {
           "type": "object",
@@ -997,18 +2233,25 @@
             "enabled": {
               "type": "boolean"
             },
+            "jobNamePrefix": {
+              "type": "string"
+            },
             "image": {
               "$ref": "#/definitions/containerImage"
             },
             "pullSecretName": {
               "type": "string"
+            },
+            "operatorVersionsToMirror": {
+              "$ref": "#/definitions/csv"
             }
           },
           "additionalProperties": false,
           "required": [
             "enabled",
             "image",
-            "pullSecretName"
+            "pullSecretName",
+            "operatorVersionsToMirror"
           ]
         }
       },
@@ -1016,10 +2259,108 @@
       "required": [
         "environmentName",
         "outboundServiceTags",
+        "ondemandSync",
         "ocMirror"
       ]
     },
+    "arobit": {
+      "type": "object",
+      "properties": {
+        "forwarder": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "$ref": "#/definitions/containerImage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "image"
+          ]
+        },
+        "kusto": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "environmentName": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "environmentName"
+          ]
+        },
+        "mdsd": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "$ref": "#/definitions/containerImage"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "image"
+          ]
+        }
+      }
+    },
+    "customExporter": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "managedIdentityName": {
+          "type": "string",
+          "description": "The name of the MSI that will be used by the exporter"
+        },
+        "k8s": {
+          "$ref": "#/definitions/k8sDeployment"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "managedIdentityName",
+        "k8s"
+      ]
+    },
+    "kubeEvents": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "enabled"
+      ]
+    },
     "acrPull": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/containerImage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "image"
+      ]
+    },
+    "aksCommandRuntime": {
       "type": "object",
       "properties": {
         "image": {
@@ -1038,7 +2379,7 @@
           "$ref": "#/definitions/containerImage"
         },
         "providerImage": {
-          "type": "string"
+          "$ref": "#/definitions/containerImage"
         }
       },
       "additionalProperties": false,
@@ -1073,20 +2414,7 @@
               "$ref": "#/definitions/tracing"
             },
             "k8s": {
-              "type": "object",
-              "properties": {
-                "namespace": {
-                  "type": "string"
-                },
-                "serviceAccountName": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "namespace",
-                "serviceAccountName"
-              ]
+              "$ref": "#/definitions/k8sDeployment"
             }
           },
           "additionalProperties": false,
@@ -1107,6 +2435,12 @@
             "loglevel": {
               "type": "integer"
             },
+            "managedIdentityName": {
+              "type": "string"
+            },
+            "k8s": {
+              "$ref": "#/definitions/k8sDeployment"
+            },
             "sidecar": {
               "type:": "object",
               "additionalProperties": false,
@@ -1121,7 +2455,9 @@
           "required": [
             "consumerName",
             "loglevel",
-            "sidecar"
+            "sidecar",
+            "managedIdentityName",
+            "k8s"
           ]
         },
         "eventGrid": {
@@ -1137,9 +2473,15 @@
               "pattern": "^[a-zA-Z0-9-]+$",
               "not": {
                 "anyOf": [
-                  { "pattern": "^Microsoft-" },
-                  { "pattern": "^EventGrid-" },
-                  { "pattern": "^System-" }
+                  {
+                    "pattern": "^Microsoft-"
+                  },
+                  {
+                    "pattern": "^EventGrid-"
+                  },
+                  {
+                    "pattern": "^System-"
+                  }
                 ]
               },
               "description": "Name length should be between 3 and 50 characters in length but we limited to 44 characters so we have a future option to use NSP: https://learn.microsoft.com/en-us/azure/private-link/network-security-perimeter-concepts. Only alphanumeric letters, digits and the '-' character are allowed in the topic name. Also, the name shouldn't start with the following reserved words: Microsoft-, EventGrid-, System-"
@@ -1159,48 +2501,7 @@
           "$ref": "#/definitions/containerImage"
         },
         "postgres": {
-          "type": "object",
-          "properties": {
-            "deploy": {
-              "type": "boolean"
-            },
-            "name": {
-              "$ref": "#/definitions/postgresName"
-            },
-            "private": {
-              "type": "boolean"
-            },
-            "serverStorageSizeGB": {
-              "type": "integer"
-            },
-            "serverVersion": {
-              "type": "string"
-            },
-            "minTLSVersion": {
-              "type": "string",
-              "enum": [
-                "TLSV1.2",
-                "TLSV1.3"
-              ]
-            },
-            "databaseName": {
-              "type": "string"
-            },
-            "zoneRedundantMode": {
-              "$ref": "#/definitions/zoneRedundantMode"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "deploy",
-            "name",
-            "private",
-            "serverStorageSizeGB",
-            "serverVersion",
-            "minTLSVersion",
-            "databaseName",
-            "zoneRedundantMode"
-          ]
+          "$ref": "#/definitions/postgres"
         },
         "restrictIstioIngress": {
           "type": "boolean"
@@ -1226,6 +2527,9 @@
         "applyKubeletFixes": {
           "type": "boolean"
         },
+        "hcpBackups": {
+          "$ref": "#/definitions/hcpBackups"
+        },
         "nsp": {
           "$ref": "#/definitions/nsp"
         },
@@ -1233,14 +2537,10 @@
           "$ref": "#/definitions/resourceGroupName"
         },
         "subscription": {
-          "type": "string"
+          "$ref": "#/definitions/subscriptionMetadata"
         },
         "jaeger": {
           "deploy": "boolean"
-        },
-        "logs": {
-          "description": "MDSD / Genevabits log aggregation and shipping configuration",
-          "$ref": "#/definitions/aksLogConfig"
         },
         "prometheus": {
           "description": "Prometheus deployment configuration",
@@ -1276,6 +2576,11 @@
           "description": "A space-separated list of Service Principals IDs, Types and their desired grafana roles The format is: <principalId>/<principalType>/<role>, e.g. 12345678-1234-1234-1234-123456789012/Group/Admin",
           "pattern": "^$|^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\/(Group|ServicePrincipal|User)\\/(Contributor|Admin|Viewer)\\s*)+$"
         },
+        "crossTenantSecurityGroup": {
+          "type": "string",
+          "description": "Cross-tenant security group for Grafana access. Format: GroupObjectId;TenantId",
+          "pattern": "^$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12};[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
         "svcWorkspaceName": {
           "type": "string",
           "minLength": 4,
@@ -1290,29 +2595,97 @@
           "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
           "description": "The workspace name should include 4-63 letters, digits or '-'. The '-' shouldn't be the first or the last symbol. We limit the name to 44 characters so we have a future option to use NSP: https://learn.microsoft.com/en-us/azure/private-link/network-security-perimeter-concepts"
         },
-        "devAlertingEmails": {
+        "alertRuleOwningTeamTag": {
           "type": "string"
         },
-        "sev1ActionGroupIDs": {
-          "type": "string"
+        "alertsEnabled": {
+          "type": "boolean",
+          "description": "Whether ICM alerting is enabled for this region. When false, action groups will be disabled."
         },
-        "sev2ActionGroupIDs": {
-          "type": "string"
-        },
-        "sev3ActionGroupIDs": {
-          "type": "string"
-        },
-        "sev4ActionGroupIDs": {
-          "type": "string"
+        "icm": {
+          "type": "object",
+          "properties": {
+            "manageConnection": {
+              "type": "boolean"
+            },
+            "connectionName": {
+              "type": "string",
+              "description": "ICM connection Name"
+            },
+            "connectionId": {
+              "type": "string",
+              "description": "ICM connection id"
+            },
+            "environment": {
+              "type": "string",
+              "description": "ICM environment"
+            },
+            "sre": {
+              "$ref": "#/definitions/icmConnection"
+            },
+            "sl": {
+              "$ref": "#/definitions/icmConnection"
+            },
+            "msft": {
+              "$ref": "#/definitions/icmConnection"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "connectionName",
+            "connectionId",
+            "environment",
+            "sre",
+            "sl"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
         "grafanaName",
         "grafanaRoles",
+        "crossTenantSecurityGroup",
         "grafanaZoneRedundantMode",
         "svcWorkspaceName",
-        "hcpWorkspaceName"
+        "hcpWorkspaceName",
+        "alertRuleOwningTeamTag"
+      ]
+    },
+    "routeMonitorOperator": {
+      "type": "object",
+      "properties": {
+        "operatorImage": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "blackboxExporterImage": {
+          "$ref": "#/definitions/containerImage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operatorImage",
+        "blackboxExporterImage"
+      ]
+    },
+    "velero": {
+      "type": "object",
+      "description": "Velero configuration",
+      "properties": {
+        "server": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "azurePlugin": {
+          "$ref": "#/definitions/containerImage"
+        },
+        "hypershiftPlugin": {
+          "$ref": "#/definitions/containerImage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "server",
+        "azurePlugin",
+        "hypershiftPlugin"
       ]
     },
     "logs": {
@@ -1322,16 +2695,13 @@
       "properties": {
         "loganalytics": {
           "type": "object",
-          "description": "Log Analytics configuration",
+          "description": "DEPRECATED, remove after updating sdp-pipelines",
           "properties": {
             "enable": {
               "type": "boolean"
             }
           },
-          "additionalProperties": false,
-          "required": [
-            "enable"
-          ]
+          "additionalProperties": false
         },
         "mdsd": {
           "type": "object",
@@ -1384,22 +2754,64 @@
         }
       },
       "required": [
-        "mdsd",
-        "loganalytics"
+        "mdsd"
       ]
     },
     "msiKeyVault": {
       "$ref": "#/definitions/keyVault"
     },
-    "oidcStorageAccountName": {
-      "type": "string",
-      "minLength": 3,
-      "maxLength": 24,
-      "pattern": "^[a-z0-9]+$",
-      "description": "The field can contain only lowercase letters and numbers. Name must be between 3 and 24 characters."
-    },
-    "oidcZoneRedundantMode": {
-      "$ref": "#/definitions/zoneRedundantMode"
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "storageAccount": {
+          "ref": "#/definitions/storageAccount"
+        },
+        "frontdoor": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "sku": {
+              "type": "string",
+              "enum": [
+                "Premium_AzureFrontDoor",
+                "Standard_AzureFrontDoor"
+              ]
+            },
+            "subdomain": {
+              "type": "string"
+            },
+            "keyVault": {
+              "$ref": "#/definitions/keyVault"
+            },
+            "useManagedCertificates": {
+              "type": "boolean"
+            },
+            "msiName": {
+              "type": "string"
+            },
+            "manage": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "subdomain",
+            "sku",
+            "keyVault",
+            "useManagedCertificates",
+            "msiName",
+            "manage"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "storageAccount",
+        "frontdoor"
+      ]
     },
     "region": {
       "type": "string"
@@ -1425,8 +2837,14 @@
         "softDelete": {
           "type": "boolean"
         },
-        "assignNSP":{
-          "type":"boolean"
+        "assignNSP": {
+          "type": "boolean"
+        },
+        "tagKey": {
+          "type": "string"
+        },
+        "tagValue": {
+          "type": "string"
         }
       },
       "additionalProperties": false,
@@ -1435,7 +2853,9 @@
         "private",
         "region",
         "rg",
-        "softDelete"
+        "softDelete",
+        "tagKey",
+        "tagValue"
       ]
     },
     "svc": {
@@ -1448,7 +2868,7 @@
           "$ref": "#/definitions/resourceGroupName"
         },
         "subscription": {
-          "type": "string"
+          "$ref": "#/definitions/subscriptionMetadata"
         },
         "nsp": {
           "$ref": "#/definitions/nsp"
@@ -1489,9 +2909,33 @@
             "ingressGatewayIPAddressName"
           ]
         },
-        "logs": {
-          "description": "MDSD / Genevabits log aggregation and shipping configuration",
-          "$ref": "#/definitions/aksLogConfig"
+        "opsIngress": {
+          "type": "object",
+          "description": "Operations ingress configuration for Admin API and other ops components",
+          "properties": {
+            "gateway": {
+              "type": "object",
+              "properties": {
+                "ipAddressName": {
+                  "description": "The name of the ops ingress gateway public IP address resource",
+                  "type": "string"
+                },
+                "ipAddressTags": {
+                  "description": "IPTags to be set on the ops ingress gateway IP address",
+                  "$ref": "#/definitions/keyColonValueCSV"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "ipAddressName",
+                "ipAddressTags"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "gateway"
+          ]
         },
         "prometheus": {
           "description": "Prometheus deployment configuration",
@@ -1503,7 +2947,8 @@
         "rg",
         "subscription",
         "aks",
-        "istio"
+        "istio",
+        "opsIngress"
       ]
     },
     "acr": {
@@ -1537,11 +2982,79 @@
         "name",
         "id"
       ]
+    },
+    "administration": {
+      "type": "object",
+      "properties": {
+        "readerGroupId": {
+          "type": "string"
+        },
+        "releaseManagementGroupId": {
+          "type": "string"
+        },
+        "sreServiceTag": {
+          "type": "string",
+          "description": "The service tag for SRE access to the service clusters operations ingress"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "readerGroupId",
+        "releaseManagementGroupId",
+        "sreServiceTag"
+      ]
+    },
+    "keyVaultDNSSuffix": {
+      "type": "string"
+    },
+    "acrDNSSuffix": {
+      "type": "string",
+      "description": "The DNS suffix for Azure Container Registry (e.g., azurecr.io, azurecr.us, azurecr.cn)"
+    },
+    "e2e": {
+      "type": "object",
+      "properties": {
+        "prow": {
+          "type": "object",
+          "properties": {
+            "globalKeyVaultTokenSecret": {
+              "type": "string",
+              "description": "The name of the KeyVault secret in the global AKV that stores the token used to authenticate with Prow."
+            }
+          }
+        },
+        "regionTest": {
+          "type": "object",
+          "properties": {
+            "prowJobName": {
+              "type": "string"
+            },
+            "gatePromotion": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prowJobName",
+            "gatePromotion"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "prow",
+        "regionTest"
+      ]
+    },
+    "automationDryRun": {
+      "type": "boolean",
+      "description": "Whether automation account runs in dry-run mode"
     }
   },
   "additionalProperties": false,
   "required": [
-    "aroDevopsMsiId",
+    "administration",
+    "azureGeoShortId",
+    "cloudEnvironmentName",
     "kvCertOfficerPrincipalId",
     "backplaneAPI",
     "clustersService",
@@ -1549,7 +3062,6 @@
     "firstPartyAppClientId",
     "firstPartyAppCertificate",
     "frontend",
-    "genevaActions",
     "global",
     "hypershift",
     "imageSync",
@@ -1560,11 +3072,16 @@
     "mgmtKeyVault",
     "monitoring",
     "msiKeyVault",
-    "oidcStorageAccountName",
-    "oidcZoneRedundantMode",
+    "oidc",
     "region",
     "regionRG",
     "serviceKeyVault",
-    "svc"
+    "sessiongate",
+    "svc",
+    "msiRp",
+    "msiCredentialsRefresher",
+    "keyVaultDNSSuffix",
+    "acrDNSSuffix",
+    "e2e"
   ]
 }

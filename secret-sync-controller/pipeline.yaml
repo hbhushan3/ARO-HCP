@@ -2,9 +2,16 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.SecretSyncController
 rolloutName: Secret Sync Controller Rollout
 resourceGroups:
-- name: '{{ .global.rg }}'
-  subscription: '{{ .global.subscription }}'
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
+  - name: output
+    action: ARM
+    template: templates/output-global.bicep
+    parameters: ./../dev-infrastructure/configurations/output-global.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
   - name: mirror-image
     action: ImageMirror
     targetACR:
@@ -20,28 +27,55 @@ resourceGroups:
     pullSecretName:
       configRef: imageSync.ondemandSync.pullSecretName
     shellIdentity:
-      configRef: aroDevopsMsiId
-- name: '{{ .mgmt.rg  }}'
-  subscription: '{{ .mgmt.subscription  }}'
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "unknown_storage_failure"
+      - "unexpected EOF"
+      - "unauthorized: authentication required"
+      maximumRetryCount: 5
+      durationBetweenRetries: 1m
+- name: kusto
+  resourceGroup: '{{ .kusto.rg }}'
+  subscription: '{{ .global.subscription.key }}'
+  steps:
+  - name: kusto-lookup
+    action: ARM
+    template: ../dev-infrastructure/templates/kusto-lookup.bicep
+    parameters: ../dev-infrastructure/configurations/kusto-lookup.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: management
+  resourceGroup: '{{ .mgmt.rg }}'
+  subscription: '{{ .mgmt.subscription.key }}'
   steps:
   - name: deploy
-    aksCluster: '{{ .mgmt.aks.name  }}'
-    action: Shell
-    command: make deploy
-    dryRun:
-      variables:
-      - name: DRY_RUN
-        value: "true"
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: secret-sync-controller
+    releaseNamespace: secret-sync-controller
+    chartDir: ./deploy
+    valuesFile: ./deploy/values-azure.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
     dependsOn:
-    - mirror-image
-    variables:
-    - name: ACR_NAME
-      configRef: acr.svc.name
-    - name: IMAGE_DIGEST
-      configRef: secretSyncController.image.digest
-    - name: IMAGE_REPOSITORY
-      configRef: secretSyncController.image.repository
-    - name: PROVIDER_IMAGE
-      configRef: secretSyncController.providerImage
-    shellIdentity:
-      configRef: aroDevopsMsiId
+    - resourceGroup: global
+      step: mirror-image
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m

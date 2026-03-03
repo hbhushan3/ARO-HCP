@@ -9,8 +9,17 @@ kubernetesControlPlane-prometheusRule:
 .PHONY: kubernetesControlPlane-prometheusRule
 
 alerts: kubernetesControlPlane-prometheusRule
-	make -C ../tooling/prometheus-rules run
+	EXTRA_FLAGS=$(GENERATOR_FLAGS) make -C ../tooling/prometheus-rules run
 	az bicep format -f $$(yq '.prometheusRules.outputBicep' observability.yaml)
-	make -C ../tooling/prometheus-rules run-hcp
+	EXTRA_FLAGS=$(GENERATOR_FLAGS) make -C ../tooling/prometheus-rules run-hcp
 	az bicep format -f $$(yq '.prometheusRules.outputBicep' observability-hcp.yaml)
+	EXTRA_FLAGS=$(GENERATOR_FLAGS) make -C ../tooling/prometheus-rules run-msft
+	az bicep format -f $$(yq '.prometheusRules.outputBicep' observability-msft.yaml)
 .PHONY: alerts
+
+recording-rules:
+	make -C ../tooling/prometheus-rules run-recording-rules
+	az bicep format -f $$(yq '.prometheusRules.outputBicep' observability-recording-rules.yaml)
+	make -C ../tooling/prometheus-rules run-hcp-recording-rules
+	az bicep format -f $$(yq '.prometheusRules.outputBicep' observability-hcp-recording-rules.yaml)
+.PHONY: recording-rules

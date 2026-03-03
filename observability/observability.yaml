@@ -1,20 +1,48 @@
 prometheusRules:
-  rulesFolders: []
-  untestedRules:
-  - ../observability/alerts/kubernetesControlPlane-prometheusRule.yaml
+  rulesFolders:
+  - ../observability/alerts/prometheus-prometheusRule.yaml
+  - ../frontend/alerts/mise-prometheusRule.yaml
+  - ../frontend/alerts/frontend-prometheusRule.yaml
+  #- ../cluster-service/alerts/cluster-service-slo-rules.yaml
+  - ../backend/alerts/backend-prometheusRule.yaml
+  - ../observability/alerts/arobit-prometheusRule.yaml
+  untestedRules: []
   outputBicep: ../dev-infrastructure/modules/metrics/rules/generatedPrometheusAlertingRules.bicep
   prometheusOperatorVersion: e02554298cb62b5533f3407c8eacc664e80bc74b
+  outputReplacements:
+  - from: 'job="kube-scheduler"'
+    to: 'job="controlplane-kube-scheduler"'
+  - from: 'job="apiserver"'
+    to: 'job="controlplane-apiserver"'
+  - from: 'job="etcd"'
+    to: 'job="controlplane-etcd"'
+  - from: 'job="cluster-autoscaler"'
+    to: 'job="controlplane-cluster-autoscaler"'
+  - from: 'job="kube-controller-manager"'
+    to: 'job="controlplane-kube-controller-manager"'
 grafana-dashboards:
   azureManagedFolders:
   - Azure Managed Prometheus
   - Azure Monitor
   - Microsoft Defender for Cloud
+  - Azure Databases
+  - High Performance Computing Clusters
   dashboardFolders:
   - name: istio
-    path: ../istio/grafana-dashboards
-  - name: Image Sync
-    path: ../image-sync/grafana-dashboards
+    path: ./grafana-dashboards/istio/
   - name: Infrastructure
-    path: infra-dashboards
+    path: ./grafana-dashboards/infra-dashboards
   - name: Frontend
-    path: ../frontend/grafana-dashboards
+    path: ./grafana-dashboards/frontend/
+  - name: Backend
+    path: ./grafana-dashboards/backend/
+  - name: Clusters Service
+    path: ./grafana-dashboards/clusters-service
+  - name: Maestro
+    path: ./grafana-dashboards/maestro/
+  - name: MSI Credential Refresher
+    path: ./grafana-dashboards/msi-credential-refresher
+  - name: Performance & Scale
+    path: ./grafana-dashboards/perfscale-dashboards
+  - name: HCP Kube API Server
+    path: ./grafana-dashboards/kas-monitor

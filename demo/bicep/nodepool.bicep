@@ -13,15 +13,13 @@ resource nodepool 'Microsoft.RedHatOpenShift/hcpOpenShiftClusters/nodePools@2024
   name: nodePoolName
   location: resourceGroup().location
   properties: {
-    version: {
-      id: 'openshift-v4.18.1'
-      channelGroup: 'stable'
-    }
     platform: {
       subnetId: hcp.properties.platform.subnetId
       vmSize: 'Standard_D8s_v3'
-      diskSizeGiB: 64
-      diskStorageAccountType: 'StandardSSD_LRS'
+      osDisk: {
+        sizeGiB: 64
+        diskStorageAccountType: 'StandardSSD_LRS'
+      }
     }
     replicas: 2
   }

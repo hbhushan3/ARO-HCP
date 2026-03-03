@@ -12,22 +12,31 @@ param aksEtcdKVEnableSoftDelete bool
 param metricLabelsAllowlist string = ''
 param metricAnnotationsAllowList string = ''
 
-// System agentpool spec(Infra)
-param systemAgentMinCount int = 2
-param systemAgentMaxCount int = 3
-param systemAgentVMSize string = 'Standard_D2s_v3'
+// System agentpool spec (Infra)
+param systemAgentPoolName string
+param systemAgentMinCount int
+param systemAgentMaxCount int
+param systemAgentVMSize string
+param systemAgentPoolZones array
+param systemZoneRedundantMode string
 
 // User agentpool spec (Worker)
-param userAgentMinCount int = 1
-param userAgentMaxCount int = 3
-param userAgentVMSize string = 'Standard_D2s_v3'
-param userAgentPoolAZCount int = 3
+param userAgentPoolName string
+param userAgentMinCount int
+param userAgentMaxCount int
+param userAgentVMSize string
+param userAgentPoolZones array
+param userAgentPoolCount int
+param userZoneRedundantMode string
 
 // User agentpool spec (Infra)
-param infraAgentMinCount int = 1
-param infraAgentMaxCount int = 3
-param infraAgentVMSize string = 'Standard_D2s_v3'
-param infraAgentPoolAZCount int = 1
+param infraAgentPoolName string
+param infraAgentMinCount int
+param infraAgentMaxCount int
+param infraAgentVMSize string
+param infraAgentPoolZones array
+param infraAgentPoolCount int
+param infraZoneRedundantMode string
 
 param serviceCidr string = '10.130.0.0/16'
 param dnsServiceIP string = '10.130.0.10'
@@ -35,45 +44,36 @@ param dnsServiceIP string = '10.130.0.10'
 // Passed Params and Overrides
 param location string
 
-@description('The regional resource group')
-param regionalResourceGroup string
-
-@description('List of Availability Zones to use for the AKS cluster')
-param locationAvailabilityZones array
-var locationHasAvailabilityZones = length(locationAvailabilityZones) > 0
+@description('The resource group hosting IP Addresses of the AKS Clusters')
+param ipResourceGroup string
+param ipZones array
 
 param kubernetesVersion string
 param deployIstio bool
 param istioVersions array = []
-param vnetAddressPrefix string
-param subnetPrefix string
+param vnetName string
+param nodeSubnetId string
 param podSubnetPrefix string
 param clusterType string
 param workloadIdentities array
-param nodeSubnetNSGId string
 param networkDataplane string
 param networkPolicy string
-param enableSwiftV2 bool
+param enableSwiftV2Nodepools bool
 
-@description('Istio Ingress Gateway Public IP Address resource name')
-param istioIngressGatewayIPAddressName string = ''
+param aksClusterUserDefinedManagedIdentityName string
 
 @description('IPTags to be set on the cluster outbound IP address in the format of ipTagType:tag,ipTagType:tag')
 param aksClusterOutboundIPAddressIPTags string = ''
-var aksClusterOutboundIPAddressIPTagsArray = [
-  for tag in csvToArray(aksClusterOutboundIPAddressIPTags): parseIPServiceTag(tag)
-]
-
-@description('IPTags to be set on the Istio Ingress Gateway IP address in the format of ipTagType:tag,ipTagType:tag')
-param istioIngressGatewayIPAddressIPTags string = ''
-var istioIngressGatewayIPAddressIPTagsArray = [
-  for tag in csvToArray(istioIngressGatewayIPAddressIPTags): parseIPServiceTag(tag)
-]
 
 @maxLength(24)
 param aksKeyVaultName string
 
-param logAnalyticsWorkspaceId string = ''
+// KV tagging
+param aksKeyVaultTagName string
+param aksKeyVaultTagValue string
+
+// Owning team tag
+param owningTeamTagValue string
 
 // Local Params
 @description('Optional DNS prefix to use with hosted Kubernetes API server FQDN.')
@@ -112,13 +112,6 @@ var networkContributorRoleId = subscriptionResourceId(
   '4d97b98b-1d4f-4787-a291-c67834d212e7'
 )
 
-// Tag Contributor Role
-// https://www.azadvertizer.net/azrolesadvertizer/4a9ae827-6dc8-4573-8ac7-8239d42aa03f.html
-var tagContributorRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions/',
-  '4a9ae827-6dc8-4573-8ac7-8239d42aa03f'
-)
-
 import * as res from '../modules/resource.bicep'
 
 //
@@ -133,7 +126,8 @@ module aks_keyvault_builder '../modules/keyvault/keyvault.bicep' = {
     // todo: change for higher environments
     private: false
     enableSoftDelete: aksEtcdKVEnableSoftDelete
-    purpose: 'etcd-encryption'
+    tagKey: aksKeyVaultTagName
+    tagValue: aksKeyVaultTagValue
   }
 }
 
@@ -180,75 +174,8 @@ resource aks_keyvault_crypto_user 'Microsoft.Authorization/roleAssignments@2022-
 //   N E T W O R K
 //
 
-resource deploymentMsiNetworkContributorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: resourceGroup()
-  name: guid(deploymentMsiId, networkContributorRoleId, resourceGroup().id)
-  properties: {
-    roleDefinitionId: networkContributorRoleId
-    principalId: reference(deploymentMsiId, '2023-01-31').principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource deploymentMsiTagContributorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: resourceGroup()
-  name: guid(deploymentMsiId, tagContributorRoleId, resourceGroup().id)
-  properties: {
-    roleDefinitionId: tagContributorRoleId
-    principalId: reference(deploymentMsiId, '2023-01-31').principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-var vnetName = 'aks-net'
-
-module vnetCreation '../modules/network/vnet.bicep' = {
-  name: 'vnet-${vnetName}-creation'
-  params: {
-    location: location
-    vnetName: vnetName
-    vnetAddressPrefix: vnetAddressPrefix
-    enableSwift: enableSwiftV2
-    deploymentMsiId: deploymentMsiId
-  }
-  dependsOn: [
-    deploymentMsiNetworkContributorRoleAssignment
-    deploymentMsiTagContributorRoleAssignment
-  ]
-}
-
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
   name: vnetName
-  dependsOn: [
-    vnetCreation
-  ]
-}
-
-resource aksNodeSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
-  parent: vnet
-  name: 'ClusterSubnet-001'
-  properties: {
-    addressPrefix: subnetPrefix
-    privateEndpointNetworkPolicies: 'Disabled'
-    serviceEndpoints: [
-      {
-        service: 'Microsoft.AzureCosmosDB'
-      }
-      {
-        service: 'Microsoft.ContainerRegistry'
-      }
-      {
-        service: 'Microsoft.Storage'
-      }
-      {
-        service: 'Microsoft.KeyVault'
-      }
-    ]
-    defaultOutboundAccess: false
-    networkSecurityGroup: {
-      id: nodeSubnetNSGId
-    }
-  }
 }
 
 resource aksPodSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
@@ -272,23 +199,19 @@ resource aksPodSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
       }
     ]
   }
-  dependsOn: [
-    aksNodeSubnet
-  ]
 }
 
 //
 //   E G R E S S   A N D   I N G R E S S
 //
 
-resource aksClusterUserDefinedManagedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: '${aksClusterName}-msi'
-  location: location
+resource aksClusterUserDefinedManagedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: aksClusterUserDefinedManagedIdentityName
 }
 
 resource aksNetworkContributorRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: vnet
-  name: guid(aksClusterUserDefinedManagedIdentity.id, networkContributorRoleId, aksNodeSubnet.id)
+  name: guid(aksClusterUserDefinedManagedIdentity.id, networkContributorRoleId, nodeSubnetId)
   properties: {
     roleDefinitionId: networkContributorRoleId
     principalId: aksClusterUserDefinedManagedIdentity.properties.principalId
@@ -296,32 +219,15 @@ resource aksNetworkContributorRoleAssignment 'Microsoft.Authorization/roleAssign
   }
 }
 
-module istioIngressGatewayIPAddress '../modules/network/publicipaddress.bicep' = if (deployIstio) {
-  name: istioIngressGatewayIPAddressName
-  scope: resourceGroup(regionalResourceGroup)
-  params: {
-    name: istioIngressGatewayIPAddressName
-    ipTags: istioIngressGatewayIPAddressIPTagsArray
-    location: location
-    zones: locationHasAvailabilityZones ? locationAvailabilityZones : null
-    // Role Assignment needed for the public IP address to be used on the Load Balancer
-    roleAssignmentProperties: {
-      principalId: aksClusterUserDefinedManagedIdentity.properties.principalId
-      principalType: 'ServicePrincipal'
-      roleDefinitionId: networkContributorRoleId
-    }
-  }
-}
-
 var aksClusterOutboundIPAddressName = '${aksClusterName}-outbound-ip'
 module aksClusterOutboundIPAddress '../modules/network/publicipaddress.bicep' = {
   name: aksClusterOutboundIPAddressName
-  scope: resourceGroup(regionalResourceGroup)
+  scope: resourceGroup(ipResourceGroup)
   params: {
     name: aksClusterOutboundIPAddressName
-    ipTags: aksClusterOutboundIPAddressIPTagsArray
+    ipTags: aksClusterOutboundIPAddressIPTags
     location: location
-    zones: locationHasAvailabilityZones ? locationAvailabilityZones : null
+    zones: length(ipZones) > 0 ? ipZones : null
     // Role Assignment needed for the public IP address to be used on the Load Balancer
     roleAssignmentProperties: {
       principalId: aksClusterUserDefinedManagedIdentity.properties.principalId
@@ -345,7 +251,17 @@ var advancedNetworking = networkDataplane == 'cilium'
     }
   : null
 
-resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
+var swiftNodepoolTags = enableSwiftV2Nodepools
+  ? {
+      'aks-nic-enable-multi-tenancy': 'true'
+    }
+  : null
+
+var systemPoolZonesArray = systemZoneRedundantMode == 'Enabled' || (systemZoneRedundantMode == 'Auto' && length(systemAgentPoolZones) > 0)
+  ? systemAgentPoolZones
+  : null
+
+resource aksCluster 'Microsoft.ContainerService/managedClusters@2025-07-02-preview' = {
   location: location
   name: aksClusterName
   sku: {
@@ -355,6 +271,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
   tags: {
     persist: 'true'
     clusterType: clusterType
+    owningTeam: owningTeamTagValue
   }
   identity: {
     type: 'UserAssigned'
@@ -372,24 +289,16 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
         enabled: true
         config: {
           enableSecretRotation: 'true'
-          rotationPollInterval: '5m'
+          rotationPollInterval: '1h'
         }
       }
-      omsagent: (logAnalyticsWorkspaceId != '')
-        ? {
-            enabled: true
-            config: {
-              logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
-              useAADAuth: 'true'
-            }
-          }
-        : {
-            enabled: false
-          }
+      omsagent: {
+        enabled: false
+      }
     }
     agentPoolProfiles: [
       {
-        name: 'system'
+        name: systemAgentPoolName
         osType: 'Linux'
         osSKU: 'AzureLinux'
         mode: 'System'
@@ -400,7 +309,6 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
         kubeletDiskType: 'OS'
         osDiskType: 'Ephemeral'
         osDiskSizeGB: systemOsDiskSizeGB
-        count: systemAgentMinCount
         minCount: systemAgentMinCount
         maxCount: systemAgentMaxCount
         vmSize: systemAgentVMSize
@@ -408,10 +316,10 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
         upgradeSettings: {
           maxSurge: '10%'
         }
-        vnetSubnetID: aksNodeSubnet.id
+        vnetSubnetID: nodeSubnetId
         podSubnetID: aksPodSubnet.id
         maxPods: 100
-        availabilityZones: locationHasAvailabilityZones ? locationAvailabilityZones : null
+        availabilityZones: systemPoolZonesArray
         securityProfile: {
           enableSecureBoot: false
           enableVTPM: false
@@ -422,6 +330,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
         nodeTaints: [
           'CriticalAddonsOnly=true:NoSchedule'
         ]
+        tags: swiftNodepoolTags
       }
     ]
     autoScalerProfile: {
@@ -468,11 +377,7 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
         outboundIPs: {
           publicIPs: [
             {
-              id: resourceId(
-                regionalResourceGroup,
-                'Microsoft.Network/publicIPAddresses',
-                aksClusterOutboundIPAddressName
-              )
+              id: resourceId(ipResourceGroup, 'Microsoft.Network/publicIPAddresses', aksClusterOutboundIPAddressName)
             }
           ]
         }
@@ -521,6 +426,13 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
           }
         }
       : null
+    ingressProfile: deployIstio
+      ? {
+          gatewayAPI: {
+            installation: 'Standard'
+          }
+        }
+      : null
     storageProfile: {
       diskCSIDriver: {
         enabled: true
@@ -541,89 +453,85 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2024-10-01' = {
   ]
 }
 
-resource userAgentPools 'Microsoft.ContainerService/managedClusters/agentPools@2024-10-01' = [
-  for i in range(0, userAgentPoolAZCount): {
+resource maintenanceWindows 'Microsoft.ContainerService/managedClusters/maintenanceConfigurations@2025-08-02-preview' = [
+  for maintenanceType in ['default', 'aksManagedAutoUpgradeSchedule', 'aksManagedNodeOSUpgradeSchedule']: {
     parent: aksCluster
-    name: 'user${take(string(i+1), 8)}'
+    name: maintenanceType
     properties: {
-      osType: 'Linux'
-      osSKU: 'AzureLinux'
-      mode: 'User'
-      enableAutoScaling: true
-      enableEncryptionAtHost: true
-      enableFIPS: true
-      enableNodePublicIP: false
-      kubeletDiskType: 'OS'
-      osDiskType: 'Ephemeral'
-      osDiskSizeGB: userOsDiskSizeGB
-      count: userAgentMinCount
-      minCount: userAgentMinCount
-      maxCount: userAgentMaxCount
-      vmSize: userAgentVMSize
-      type: 'VirtualMachineScaleSets'
-      upgradeSettings: {
-        maxSurge: '10%'
-      }
-      vnetSubnetID: aksNodeSubnet.id
-      podSubnetID: aksPodSubnet.id
-      maxPods: 225
-      availabilityZones: locationHasAvailabilityZones ? [locationAvailabilityZones[i]] : null
-      securityProfile: {
-        enableSecureBoot: false
-        enableVTPM: false
-      }
-      nodeLabels: {
-        'aro-hcp.azure.com/role': 'worker'
-      }
-      tags: enableSwiftV2
-        ? {
-            'aks-nic-enable-multi-tenancy': 'true'
+      maintenanceWindow: {
+        durationHours: 10
+        startTime: '15:00'
+        notAllowedDates: [
+          {
+            start: '2025-11-16'
+            end: '2025-11-22'
           }
-        : null
+          {
+            start: '2025-11-24'
+            end: '2025-12-03'
+          }
+          {
+            start: '2025-12-22'
+            end: '2026-01-13'
+          }
+          {
+            start: '2026-02-16'
+            end: '2026-02-20'
+          }
+        ]
+        schedule: {
+          weekly: {
+            dayOfWeek: 'Monday'
+            intervalWeeks: 1
+          }
+        }
+      }
     }
   }
 ]
 
-resource infraAgentPools 'Microsoft.ContainerService/managedClusters/agentPools@2024-10-01' = [
-  for i in range(0, infraAgentPoolAZCount): {
-    parent: aksCluster
-    name: 'infra${take(string(i+1), 7)}'
-    properties: {
-      osType: 'Linux'
-      osSKU: 'AzureLinux'
-      mode: 'User'
-      enableAutoScaling: true
-      enableEncryptionAtHost: true
-      enableFIPS: true
-      enableNodePublicIP: false
-      kubeletDiskType: 'OS'
-      osDiskType: 'Ephemeral'
-      osDiskSizeGB: infraOsDiskSizeGB
-      count: infraAgentMinCount
-      minCount: infraAgentMinCount
-      maxCount: infraAgentMaxCount
-      vmSize: infraAgentVMSize
-      type: 'VirtualMachineScaleSets'
-      upgradeSettings: {
-        maxSurge: '10%'
-      }
-      vnetSubnetID: aksNodeSubnet.id
-      podSubnetID: aksPodSubnet.id
-      maxPods: 225
-      availabilityZones: locationHasAvailabilityZones ? [locationAvailabilityZones[i]] : null
-      securityProfile: {
-        enableSecureBoot: false
-        enableVTPM: false
-      }
-      nodeLabels: {
-        'aro-hcp.azure.com/role': 'infra'
-      }
-      nodeTaints: [
-        'infra=true:NoSchedule'
-      ]
-    }
+module userAgentPools '../modules/aks/pool.bicep' = {
+  name: 'user-agent-pools'
+  params: {
+    aksClusterName: aksCluster.name
+    poolBaseName: userAgentPoolName
+    poolZones: userAgentPoolZones
+    poolCount: userAgentPoolCount
+    poolRole: 'worker'
+    enableSwiftV2: enableSwiftV2Nodepools
+    minCount: userAgentMinCount
+    maxCount: userAgentMaxCount
+    vmSize: userAgentVMSize
+    osDiskSizeGB: userOsDiskSizeGB
+    vnetSubnetId: nodeSubnetId
+    podSubnetId: aksPodSubnet.id
+    zoneRedundantMode: userZoneRedundantMode
+    maxPods: 225
   }
-]
+}
+
+module infraAgentPools '../modules/aks/pool.bicep' = {
+  name: 'infra-agent-pools'
+  params: {
+    aksClusterName: aksCluster.name
+    poolBaseName: infraAgentPoolName
+    poolZones: infraAgentPoolZones
+    poolCount: infraAgentPoolCount
+    poolRole: 'infra'
+    enableSwiftV2: false
+    minCount: infraAgentMinCount
+    maxCount: infraAgentMaxCount
+    vmSize: infraAgentVMSize
+    osDiskSizeGB: infraOsDiskSizeGB
+    vnetSubnetId: nodeSubnetId
+    podSubnetId: aksPodSubnet.id
+    zoneRedundantMode: infraZoneRedundantMode
+    maxPods: 225
+    taints: [
+      'infra=true:NoSchedule'
+    ]
+  }
+}
 
 //
 // ACR Pull Permissions on the own resource group and the resource groups provided
@@ -642,16 +550,19 @@ module acrPullRole 'acr/acr-permissions.bicep' = [
     name: guid(acrRef.name, aksCluster.id, acrPullRoleDefinitionId)
     scope: resourceGroup(acrRef.resourceGroup.subscriptionId, acrRef.resourceGroup.name)
     params: {
-      principalId: aksCluster.properties.identityProfile.kubeletidentity.objectId
+      principalIds: [aksCluster.properties.identityProfile.kubeletidentity.objectId]
       acrName: acrRef.name
       grantPullAccess: true
     }
   }
 ]
 
-resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = [
+//
+//   W O R K L O A D   I D E N T I T I E S
+//
+
+resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = [
   for wi in workloadIdentities: {
-    location: location
     name: wi.value.uamiName
   }
 ]
@@ -684,7 +595,7 @@ module acrPullerRoles 'acr/acr-permissions.bicep' = [
     name: guid(acrRef.name, aksCluster.id, acrPullRoleDefinitionId, 'puller-identity')
     scope: resourceGroup(acrRef.resourceGroup.subscriptionId, acrRef.resourceGroup.name)
     params: {
-      principalId: pullerIdentity.properties.principalId
+      principalIds: [pullerIdentity.properties.principalId]
       acrName: acrRef.name
       grantPullAccess: true
     }
@@ -719,18 +630,8 @@ resource aroDevopsMSIClusterAdmin 'Microsoft.Authorization/roleAssignments@2022-
 }
 
 // Outputs
-output userAssignedIdentities array = [
-  for i in range(0, length(workloadIdentities)): {
-    uamiID: uami[i].id
-    uamiName: workloadIdentities[i].value.uamiName
-    uamiClientID: uami[i].properties.clientId
-    uamiPrincipalID: uami[i].properties.principalId
-  }
-]
-output aksVnetId string = vnet.id
-output aksNodeSubnetId string = aksNodeSubnet.id
 output aksOidcIssuerUrl string = aksCluster.properties.oidcIssuerProfile.issuerURL
 output aksClusterName string = aksClusterName
 output aksClusterKeyVaultSecretsProviderPrincipalId string = aksCluster.properties.addonProfiles.azureKeyvaultSecretsProvider.identity.objectId
-output istioIngressGatewayIPAddress string = deployIstio ? istioIngressGatewayIPAddress.outputs.ipAddress : ''
+output aksClusterManagedIdentityPrincipalId string = aksClusterUserDefinedManagedIdentity.properties.principalId
 output etcKeyVaultId string = aks_keyvault_builder.outputs.kvId

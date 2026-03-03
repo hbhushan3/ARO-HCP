@@ -11,11 +11,11 @@ param quayRepositoriesToCache = [
     passwordIdentifier: 'quay-componentsync-password'
   }
   {
-    ruleName: 'acm-d-mce'
-    sourceRepo: 'quay.io/acm-d/*'
-    targetRepo: 'acm-d-mce/multicluster-engine/*'
-    userIdentifier: 'acm-d-componentsync-username'
-    passwordIdentifier: 'acm-d-componentsync-password'
+    ruleName: 'aroHcpCsSandboxImages'
+    sourceRepo: 'quay.io/app-sre/aro-hcp-clusters-service-sandbox'
+    targetRepo: 'app-sre/aro-hcp-clusters-service-sandbox'
+    userIdentifier: 'quay-componentsync-username'
+    passwordIdentifier: 'quay-componentsync-password'
   }
 ]
 
@@ -23,6 +23,12 @@ param purgeJobs = [
   {
     name: 'ocm-clusters-service-sandbox-purge'
     purgeFilter: 'quay.io/app-sre/ocm-clusters-service-sandbox:.*'
+    purgeAfter: '2d'
+    imagesToKeep: 1
+  }
+  {
+    name: 'aro-hcp-clusters-service-sandbox-purge'
+    purgeFilter: 'quay.io/app-sre/aro-hcp-clusters-service-sandbox:.*'
     purgeAfter: '2d'
     imagesToKeep: 1
   }

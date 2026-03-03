@@ -8,13 +8,32 @@ param clusterServiceManagedIdentityPrincipalId string
 param deployPostgres bool
 
 @description('The name of the database to create for CS')
-param csDatabaseName string = 'clusters-service'
+param csDatabaseName string
 
 @description('The name of the Postgres server for CS')
 param postgresServerName string
 
 @description('The minimum TLS version for the Postgres server')
 param postgresServerMinTLSVersion string
+
+@description('The version of the Postgres server for CS')
+param postgresServerVersion string
+
+@description('The size of the Postgres server storage for CS')
+@allowed([
+  32
+  64
+  128
+  256
+  512
+  1024
+  2048
+  4096
+  8192
+  16384
+  32768
+])
+param postgresServerStorageSizeGB int
 
 @description('Defines if the Postgres server is private')
 param postgresServerPrivate bool
@@ -49,7 +68,14 @@ param ocpAcrResourceId string
 @description('The resource ID of the managed identity used to manage the Postgres server')
 param postgresAdministrationManagedIdentityId string
 
+@description('The zone redundant mode of the Postgres Database')
 param postgresZoneRedundantMode string
+
+@description('The number of days to retain backups for.')
+param postgresBackupRetentionDays int
+
+@description('Enable geo-redundant backups for the PostgreSQL server.')
+param postgresGeoRedundantBackup bool
 
 //
 //   P O S T G R E S
@@ -58,7 +84,7 @@ param postgresZoneRedundantMode string
 import * as res from 'resource.bicep'
 
 module csPostgres 'postgres/postgres.bicep' = if (deployPostgres) {
-  name: '${deployment().name}-postgres'
+  name: 'cs-postgres-deployment'
   scope: resourceGroup(regionalResourceGroup)
   params: {
     name: postgresServerName
@@ -70,7 +96,7 @@ module csPostgres 'postgres/postgres.bicep' = if (deployPostgres) {
         principalType: 'ServicePrincipal'
       }
     ]
-    version: '12'
+    version: postgresServerVersion
     minTLSVersion: postgresServerMinTLSVersion
     configurations: [
       // some configs taked over from the CS RDS instance
@@ -97,7 +123,9 @@ module csPostgres 'postgres/postgres.bicep' = if (deployPostgres) {
       startHour: 1
       startMinute: 12
     }
-    storageSizeGB: 128
+    backupRetentionDays: postgresBackupRetentionDays
+    geoRedundantBackup: postgresGeoRedundantBackup
+    storageSizeGB: postgresServerStorageSizeGB
     private: postgresServerPrivate
     subnetId: privateEndpointSubnetId
     vnetId: privateEndpointVnetId
@@ -111,7 +139,7 @@ module csPostgres 'postgres/postgres.bicep' = if (deployPostgres) {
 //
 
 module csManagedIdentityDatabaseAccess 'postgres/postgres-access.bicep' = if (deployPostgres) {
-  name: '${deployment().name}-cs-db-access'
+  name: 'cs-db-access'
   scope: resourceGroup(regionalResourceGroup)
   params: {
     postgresServerName: postgresServerName
@@ -123,46 +151,4 @@ module csManagedIdentityDatabaseAccess 'postgres/postgres-access.bicep' = if (de
   dependsOn: [
     csPostgres
   ]
-}
-
-//
-//   K E Y V A U L T   A C C E S S
-//
-
-module csServiceKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = {
-  name: guid(serviceKeyVaultName, 'cs', 'read')
-  scope: resourceGroup(serviceKeyVaultResourceGroup)
-  params: {
-    keyVaultName: serviceKeyVaultName
-    roleName: 'Key Vault Secrets User'
-    managedIdentityPrincipalId: clusterServiceManagedIdentityPrincipalId
-  }
-}
-
-//
-//   D N S
-//
-
-module csDnsZoneContributor '../modules/dns/zone-contributor.bicep' = {
-  name: guid(regionalCXDNSZoneName, clusterServiceManagedIdentityPrincipalId)
-  scope: resourceGroup(regionalResourceGroup)
-  params: {
-    zoneName: regionalCXDNSZoneName
-    zoneContributerManagedIdentityPrincipalId: clusterServiceManagedIdentityPrincipalId
-  }
-}
-
-//
-//   O C P   A C R   P E R M I S S I O N S
-//
-
-var ocpAcrRef = res.acrRefFromId(ocpAcrResourceId)
-module acrManageTokenRole '../modules/acr/acr-permissions.bicep' = {
-  name: guid(ocpAcrResourceId, resourceGroup().name, 'clusters-service', 'manage-tokens')
-  scope: resourceGroup(ocpAcrRef.resourceGroup.subscriptionId, ocpAcrRef.resourceGroup.name)
-  params: {
-    principalId: clusterServiceManagedIdentityPrincipalId
-    grantManageTokenAccess: true
-    acrName: ocpAcrRef.name
-  }
 }

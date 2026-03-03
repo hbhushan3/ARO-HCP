@@ -9,7 +9,11 @@ env:
   PRINCIPAL_ID: ${{ secrets.GHA_PRINCIPAL_ID }}
 on:
   workflow_dispatch:
-  pull_request:
+    inputs:
+      push:
+        type: boolean
+        description: Enable push to registry for services built in this workflow
+  push:
     branches:
     - main
     paths:
@@ -21,8 +25,11 @@ on:
     - 'dev-infrastructure/**/*.bicep'
     - 'dev-infrastructure/**/*.bicepparam'
     - 'dev-infrastructure/configurations/*'
+    - 'dev-infrastructure/data/*'
     - 'frontend/**'
+    - 'admin/**'
     - 'backend/**'
+    - 'sessiongate/**'
     - 'cluster-service/**'
     - 'internal/**'
     - 'maestro/**'
@@ -32,11 +39,6 @@ on:
     - 'image-sync/**/'
     - 'tooling/templatize/**'
     - 'config/*'
-    types:
-    - opened
-    - synchronize
-    - reopened
-    - closed
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -54,7 +56,6 @@ jobs:
           fi
   deploy_global_rg:
     name: 'Deploy global resources'
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     permissions:
       id-token: 'write'
       contents: 'read'
@@ -64,7 +65,7 @@ jobs:
       DEPLOY_ENV: dev
     runs-on: 'ubuntu-latest'
     steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493 # v4.2.2
       with:
         fetch-depth: 1
     - name: "install azure-cli"
@@ -89,7 +90,11 @@ jobs:
         make global acr
 
         # Setup operator roles for platform workload identity
-        make operator-roles
+        # jboll disabled for now until permissions are resolved
+        # make operator-roles
+
+        # Manage Kusto in Dev
+        make kusto
   service_ci:
     name: 'Build service images'
     permissions:
@@ -98,10 +103,9 @@ jobs:
     secrets: inherit
     uses: ./.github/workflows/services-ci.yml
     with:
-      push: ${{ github.event.pull_request.merged == true }}
+      push: ${{ inputs.push || github.event_name == 'push' }}
   deploy_dev_environment_infra:
     name: 'Deploy integrated DEV infrastructure'
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     needs:
     - deploy_global_rg
     permissions:
@@ -113,7 +117,6 @@ jobs:
       deploy_env: dev
   deploy_dev_environment_services:
     name: 'Deploy services to integrated DEV'
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     needs:
     - service_ci
     - deploy_dev_environment_infra
@@ -127,7 +130,6 @@ jobs:
   # CS PR env deployment disabled during testing
   deploy_cs_pr_environment_infra:
     name: 'Deploy CS PR infrastructure'
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     needs:
     - deploy_global_rg
     permissions:
@@ -140,7 +142,6 @@ jobs:
       deploy_cs_pr_check_deps: true
   deploy_cs_pr_environment_services:
     name: 'Deploy services to CS PR'
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     needs:
     - service_ci
     - deploy_cs_pr_environment_infra

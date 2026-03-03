@@ -3,16 +3,28 @@ kind: Gateway
 metadata:
   name: aro-hcp-gateway-external
   namespace: aks-istio-ingress
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   selector:
     istio: aks-istio-ingressgateway-external
   servers:
   - port:
       number: 443
-      name: https
+      name: frontend-https
       protocol: HTTPS
     tls:
       mode: SIMPLE
       credentialName: frontend-credential
     hosts:
-    - "*"
+    - "{{ .Values.virtualService.host }}"
+  # TODO: ops-ingress phase 4: cleanup, remove routing for admin API
+  - port:
+      number: 443
+      name: admin-api-https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: admin-api-credential
+    hosts:
+    - "{{ .Values.adminApiHost }}"

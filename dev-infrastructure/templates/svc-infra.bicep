@@ -1,10 +1,10 @@
 @description('The name of the service keyvault')
 param serviceKeyVaultName string
 
-@description('The name of the resourcegroup for the service keyvault')
+@description('The name of the resource group for the service keyvault')
 param serviceKeyVaultResourceGroup string = resourceGroup().name
 
-@description('The location of the resourcegroup for the service keyvault')
+@description('The location of the resource group for the service keyvault')
 param serviceKeyVaultLocation string = resourceGroup().location
 
 @description('Soft delete setting for service keyvault')
@@ -13,28 +13,15 @@ param serviceKeyVaultSoftDelete bool = true
 @description('If true, make the service keyvault private and only accessible by the svc cluster via private link.')
 param serviceKeyVaultPrivate bool = true
 
+// KV tagging
+param serviceKeyVaultTagName string
+param serviceKeyVaultTagValue string
+
 @description('KV certificate officer principal ID')
 param kvCertOfficerPrincipalId string
 
 @description('MSI that will be used during pipeline runs')
-param aroDevopsMsiId string
-
-@description('Set to true to prevent resources from being pruned after 48 hours')
-param persist bool = false
-
-// Log Analytics Workspace ID will be passed from region pipeline if enabled in config
-param logAnalyticsWorkspaceId string = ''
-
-// Tags the resource group
-resource resourcegroupTags 'Microsoft.Resources/tags@2024-03-01' = {
-  name: 'default'
-  scope: resourceGroup()
-  properties: {
-    tags: {
-      persist: toLower(string(persist))
-    }
-  }
-}
+param globalMSIId string
 
 // Reader role
 // https://www.azadvertizer.net/azrolesadvertizer/acdd72a7-3385-48ef-bd42-f606fba81ae7.html
@@ -46,9 +33,9 @@ var readerRoleId = subscriptionResourceId(
 // service deployments running as the aroDevopsMsi need to lookup metadata about all kinds
 // of resources, e.g. AKS metadata, database metadata, MI metadata, etc.
 resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, aroDevopsMsiId, readerRoleId)
+  name: guid(resourceGroup().id, globalMSIId, readerRoleId)
   properties: {
-    principalId: reference(aroDevopsMsiId, '2023-01-31').principalId
+    principalId: reference(globalMSIId, '2023-01-31').principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: readerRoleId
   }
@@ -60,7 +47,7 @@ resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01'
 
 // this is mostly a situation where multiple svc-infra pipelines run towards
 // a shared svc keyvault resource group ${serviceKeyVaultResourceGroup}. while
-// the individual modules will not conflict with each other, the existance
+// the individual modules will not conflict with each other, the existence
 // of same-named deployments fails one pipeline.
 var deploymentNameSuffix = uniqueString(resourceGroup().id)
 
@@ -72,8 +59,8 @@ module serviceKeyVault '../modules/keyvault/keyvault.bicep' = {
     keyVaultName: serviceKeyVaultName
     private: serviceKeyVaultPrivate
     enableSoftDelete: serviceKeyVaultSoftDelete
-    purpose: 'service'
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    tagKey: serviceKeyVaultTagName
+    tagValue: serviceKeyVaultTagValue
   }
 }
 
@@ -83,7 +70,7 @@ module serviceKeyVaultCertOfficer '../modules/keyvault/keyvault-secret-access.bi
   params: {
     keyVaultName: serviceKeyVaultName
     roleName: 'Key Vault Certificates Officer'
-    managedIdentityPrincipalId: kvCertOfficerPrincipalId
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
   }
   dependsOn: [
     serviceKeyVault
@@ -96,7 +83,7 @@ module serviceKeyVaultSecretsOfficer '../modules/keyvault/keyvault-secret-access
   params: {
     keyVaultName: serviceKeyVaultName
     roleName: 'Key Vault Secrets Officer'
-    managedIdentityPrincipalId: kvCertOfficerPrincipalId
+    managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
   }
   dependsOn: [
     serviceKeyVault
@@ -109,7 +96,7 @@ module serviceKeyVaultDevopsSecretsOfficer '../modules/keyvault/keyvault-secret-
   params: {
     keyVaultName: serviceKeyVaultName
     roleName: 'Key Vault Secrets Officer'
-    managedIdentityPrincipalId: reference(aroDevopsMsiId, '2023-01-31').principalId
+    managedIdentityPrincipalIds: [reference(globalMSIId, '2023-01-31').principalId]
   }
   dependsOn: [
     serviceKeyVault

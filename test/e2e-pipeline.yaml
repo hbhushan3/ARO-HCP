@@ -1,0 +1,38 @@
+#
+# Purpose: Run PROW E2E tests
+#
+$schema: "pipeline.schema.v1"
+serviceGroup: Microsoft.Azure.ARO.HCP.E2E
+rolloutName: E2E Tests
+resourceGroups:
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
+  steps:
+  - name: output
+    action: ARM
+    template: ../dev-infrastructure/templates/output-global.bicep
+    parameters: ../dev-infrastructure/configurations/output-global.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: service
+  resourceGroup: '{{ .svc.rg }}'
+  subscription: '{{ .svc.subscription.key }}'
+  steps: []
+  validationSteps:
+  - name: regionalGating
+    action: ProwJob
+    validation:
+    - GA
+    dryRun:
+      variables:
+      - name: DRY_RUN
+        value: "true"
+    tokenKeyvault: "{{ .global.keyVault.name }}.vault.azure.net"
+    tokenSecret: "{{ .e2e.prow.globalKeyVaultTokenSecret }}"
+    jobName: "{{ .e2e.regionTest.prowJobName }}"
+    gatePromotion: "{{ .e2e.regionTest.gatePromotion }}"
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId

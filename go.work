@@ -1,16 +1,23 @@
-go 1.24.4
-
-toolchain go1.24.4
+go 1.25.5
 
 use (
-	./admin
+	./admin/client
+	./admin/server
 	./backend
 	./frontend
 	./internal
+	./sessiongate
 	./test
-	./tooling/mcerepkg
+	./test-integration
+	./tooling/aro-hcp-exporter
+	./tooling/grafanactl
+	./tooling/hcpctl
+	./tooling/helmtest
+	./tooling/image-updater
+	./tooling/olm-bundle-repkg
 	./tooling/pipeline-documentation
 	./tooling/prometheus-rules
 	./tooling/secret-sync
 	./tooling/templatize
+	./tooling/yamlwrap
 )

@@ -70,10 +70,7 @@ var _locationAvailabilityZones = {
     ]
   }
   centraluseuap: {
-    availabilityZones: [
-      '1'
-      '2'
-    ]
+    availabilityZones: []
   }
   centralusstage: {
     availabilityZones: []
@@ -105,8 +102,9 @@ var _locationAvailabilityZones = {
   eastus2euap: {
     availabilityZones: [
       '1'
-      '2'
+      // '2' Not available in EV2
       '3'
+      '4'
     ]
   }
   eastus2stage: {
@@ -412,7 +410,7 @@ var _locationAvailabilityZones = {
 
 @export()
 func splitOrEmptyArray(inputString string, delimiter string) array =>
-  inputString == '' ? [] : split(inputString, delimiter)
+  inputString == '' || inputString == null ? [] : split(inputString, delimiter)
 
 @export()
 func csvToArray(inputString string) array => splitOrEmptyArray(inputString, ',')
@@ -435,6 +433,9 @@ func determineZoneRedundancy(availabilityZones array, mode string) bool =>
   mode == 'Auto' ? length(availabilityZones) > 0 : mode == 'Enabled' && length(availabilityZones) > 0
 
 @export()
+func generateZoneList(count int) array => count > 0 ? map(range(1, count), i => string(i)) : []
+
+@export()
 type IPServiceTag = {
   ipTagType: string
   tag: string
@@ -445,3 +446,13 @@ func parseIPServiceTag(tag string) IPServiceTag => {
   ipTagType: split(tag, ':')[0]
   tag: split(tag, ':')[1]
 }
+
+// Function to safely truncate strings, ensuring no trailing dashes or problematic characters
+@export()
+func safeTake(input string, maxLength int) string =>
+  length(take(input, maxLength)) > 0 && (endsWith(take(input, maxLength), '-') || endsWith(take(input, maxLength), '_') || endsWith(
+      take(input, maxLength),
+      '.'
+    ))
+    ? take(take(input, maxLength), length(take(input, maxLength)) - 1)
+    : take(input, maxLength)

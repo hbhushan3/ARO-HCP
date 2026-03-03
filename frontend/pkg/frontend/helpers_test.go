@@ -20,17 +20,24 @@ import (
 	"net/http"
 	"testing"
 
-	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 
 	"github.com/Azure/ARO-HCP/internal/api"
 	"github.com/Azure/ARO-HCP/internal/api/arm"
 	"github.com/Azure/ARO-HCP/internal/database"
-	"github.com/Azure/ARO-HCP/internal/mocks"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 func TestCheckForProvisioningStateConflict(t *testing.T) {
+
+	parentConflictFunc := func(s arm.ProvisioningState) bool {
+		return s == arm.ProvisioningStateProvisioning || s == arm.ProvisioningStateDeleting
+	}
+
 	tests := []struct {
 		name             string
 		resourceID       string
@@ -73,21 +80,21 @@ func TestCheckForProvisioningStateConflict(t *testing.T) {
 			resourceID:       api.TestNodePoolResourceID,
 			operationRequest: database.OperationRequestCreate,
 			directConflict:   func(s arm.ProvisioningState) bool { return false },
-			parentConflict:   func(s arm.ProvisioningState) bool { return s == arm.ProvisioningStateDeleting },
+			parentConflict:   parentConflictFunc,
 		},
 		{
 			name:             "Delete node pool",
 			resourceID:       api.TestNodePoolResourceID,
 			operationRequest: database.OperationRequestDelete,
 			directConflict:   func(s arm.ProvisioningState) bool { return s == arm.ProvisioningStateDeleting },
-			parentConflict:   func(s arm.ProvisioningState) bool { return s == arm.ProvisioningStateDeleting },
+			parentConflict:   parentConflictFunc,
 		},
 		{
 			name:             "Update node pool",
 			resourceID:       api.TestNodePoolResourceID,
 			operationRequest: database.OperationRequestUpdate,
 			directConflict:   func(s arm.ProvisioningState) bool { return !s.IsTerminal() },
-			parentConflict:   func(s arm.ProvisioningState) bool { return s == arm.ProvisioningStateDeleting },
+			parentConflict:   parentConflictFunc,
 		},
 	}
 
@@ -100,9 +107,10 @@ func TestCheckForProvisioningStateConflict(t *testing.T) {
 		for provisioningState := range arm.ListProvisioningStates() {
 			name = fmt.Sprintf("%s (provisioningState=%s)", tt.name, provisioningState)
 			t.Run(name, func(t *testing.T) {
-				ctx := ContextWithLogger(context.Background(), api.NewTestLogger())
+				ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
 				ctrl := gomock.NewController(t)
-				mockDBClient := mocks.NewMockDBClient(ctrl)
+				mockDBClient := database.NewMockDBClient(ctrl)
+				mockClusterCRUD := database.NewMockHCPClusterCRUD(ctrl)
 
 				frontend := &Frontend{
 					dbClient: mockDBClient,
@@ -112,24 +120,35 @@ func TestCheckForProvisioningStateConflict(t *testing.T) {
 				doc.ProvisioningState = provisioningState
 
 				parentResourceID := resourceID.Parent
-				parentDoc := database.NewResourceDocument(parentResourceID)
-				// Hold the provisioning state to something benign.
-				parentDoc.ProvisioningState = arm.ProvisioningStateSucceeded
-
 				mockDBClient.EXPECT().
-					GetResourceDoc(gomock.Any(), equalResourceID(parentResourceID)). // defined in frontend_test.go
-					Return("parentItemID", parentDoc, nil).
+					HCPClusters(parentResourceID.SubscriptionID, parentResourceID.ResourceGroupName).
+					Return(mockClusterCRUD).
+					MaxTimes(1)
+				mockClusterCRUD.EXPECT().
+					Get(gomock.Any(), parentResourceID.Name).
+					Return(
+						&api.HCPOpenShiftCluster{
+							TrackedResource: arm.TrackedResource{
+								Resource: arm.Resource{
+									ID: parentResourceID,
+								},
+							},
+							ServiceProviderProperties: api.HCPOpenShiftClusterServiceProviderProperties{
+								ProvisioningState: arm.ProvisioningStateSucceeded,
+							},
+						},
+						nil).
 					MaxTimes(1)
 
-				cloudError := frontend.CheckForProvisioningStateConflict(ctx, tt.operationRequest, doc)
+				cloudError := checkForProvisioningStateConflict(ctx, frontend.dbClient, tt.operationRequest, doc.ResourceID, doc.ProvisioningState)
 
 				if cloudError == nil {
 					if tt.directConflict(provisioningState) {
 						t.Errorf("Expected %d %s but got no error", http.StatusConflict, http.StatusText(http.StatusConflict))
 					}
 				} else {
-					if !tt.directConflict(provisioningState) || cloudError.StatusCode != http.StatusConflict {
-						t.Errorf("Got unexpected error: %d %s", cloudError.StatusCode, http.StatusText(cloudError.StatusCode))
+					if !tt.directConflict(provisioningState) || cloudError.(*arm.CloudError).StatusCode != http.StatusConflict {
+						t.Errorf("Got unexpected error: %d %s", cloudError.(*arm.CloudError).StatusCode, http.StatusText(cloudError.(*arm.CloudError).StatusCode))
 					}
 				}
 			})
@@ -139,9 +158,10 @@ func TestCheckForProvisioningStateConflict(t *testing.T) {
 			for provisioningState := range arm.ListProvisioningStates() {
 				name = fmt.Sprintf("%s (parent provisioningState=%s)", tt.name, provisioningState)
 				t.Run(name, func(t *testing.T) {
-					ctx := ContextWithLogger(context.Background(), api.NewTestLogger())
+					ctx := utils.ContextWithLogger(context.Background(), testr.New(t))
 					ctrl := gomock.NewController(t)
-					mockDBClient := mocks.NewMockDBClient(ctrl)
+					mockDBClient := database.NewMockDBClient(ctrl)
+					mockClusterCRUD := database.NewMockHCPClusterCRUD(ctrl)
 
 					frontend := &Frontend{
 						dbClient: mockDBClient,
@@ -157,23 +177,38 @@ func TestCheckForProvisioningStateConflict(t *testing.T) {
 						parentDoc.ProvisioningState = provisioningState
 
 						mockDBClient.EXPECT().
-							GetResourceDoc(gomock.Any(), equalResourceID(parentResourceID)). // defined in frontend_test.go
-							Return("parentItemID", parentDoc, nil)
+							HCPClusters(parentResourceID.SubscriptionID, parentResourceID.ResourceGroupName).
+							Return(mockClusterCRUD)
+						mockClusterCRUD.EXPECT().
+							Get(gomock.Any(), parentResourceID.Name).
+							Return(
+								&api.HCPOpenShiftCluster{
+									TrackedResource: arm.TrackedResource{
+										Resource: arm.Resource{
+											ID: parentResourceID,
+										},
+									},
+									ServiceProviderProperties: api.HCPOpenShiftClusterServiceProviderProperties{
+										ProvisioningState: provisioningState,
+									},
+								},
+								nil)
+
 					} else {
 						t.Fatalf("Parent resource type namespace (%s) differs from child namespace (%s)",
 							parentResourceID.ResourceType.Namespace,
 							resourceID.ResourceType.Namespace)
 					}
 
-					cloudError := frontend.CheckForProvisioningStateConflict(ctx, tt.operationRequest, doc)
+					cloudError := checkForProvisioningStateConflict(ctx, frontend.dbClient, tt.operationRequest, doc.ResourceID, doc.ProvisioningState)
 
 					if cloudError == nil {
 						if tt.parentConflict(provisioningState) {
 							t.Errorf("Expected %d %s but got no error", http.StatusConflict, http.StatusText(http.StatusConflict))
 						}
 					} else {
-						if !tt.parentConflict(provisioningState) || cloudError.StatusCode != http.StatusConflict {
-							t.Errorf("Got unexpected error: %d %s", cloudError.StatusCode, http.StatusText(cloudError.StatusCode))
+						if !tt.parentConflict(provisioningState) || cloudError.(*arm.CloudError).StatusCode != http.StatusConflict {
+							t.Errorf("Got unexpected error: %d %s", cloudError.(*arm.CloudError).StatusCode, http.StatusText(cloudError.(*arm.CloudError).StatusCode))
 						}
 					}
 				})

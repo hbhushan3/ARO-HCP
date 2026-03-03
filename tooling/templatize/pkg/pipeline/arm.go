@@ -16,26 +16,33 @@ package pipeline
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"path/filepath"
+	"maps"
+	"math/rand"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
+	"github.com/go-logr/logr"
 
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/azauth"
-
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/graph"
+	"github.com/Azure/ARO-Tools/pipelines/types"
+	"github.com/Azure/ARO-Tools/tools/cmdutils"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
-	"github.com/go-logr/logr"
+
+	"github.com/Azure/ARO-HCP/tooling/templatize/bicep"
 )
 
 type armClient struct {
+	bicepClient *bicep.LSPClient
+
 	deploymentClient        *armresources.DeploymentsClient
+	operationsClient        *armresources.DeploymentOperationsClient
 	resourceGroupClient     *armresources.ResourceGroupsClient
 	deploymentRetryWaitTime int
 
@@ -43,91 +50,48 @@ type armClient struct {
 	GetDeployment func(ctx context.Context, rgName, deploymentName string) (armresources.DeploymentsClientGetResponse, error)
 }
 
-func newArmClient(subscriptionID, region string) *armClient {
-	cred, err := azauth.GetAzureTokenCredentials()
+func newArmClient(subscriptionID, region string, bicepClient *bicep.LSPClient) (*armClient, error) {
+	cred, err := cmdutils.GetAzureTokenCredentials()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to get credentials: %w", err)
 	}
 	deploymentClient, err := armresources.NewDeploymentsClient(subscriptionID, cred, nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to create deployment client: %w", err)
+	}
+	operationsClient, err := armresources.NewDeploymentOperationsClient(subscriptionID, cred, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create deployment operations client: %w", err)
 	}
 	resourceGroupClient, err := armresources.NewResourceGroupsClient(subscriptionID, cred, nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to create resource group client: %w", err)
 	}
 	return &armClient{
+		bicepClient:             bicepClient,
 		deploymentClient:        deploymentClient,
+		operationsClient:        operationsClient,
 		deploymentRetryWaitTime: 15,
 		resourceGroupClient:     resourceGroupClient,
 		Region:                  region,
 		GetDeployment: func(ctx context.Context, rgName, deploymentName string) (armresources.DeploymentsClientGetResponse, error) {
 			return deploymentClient.Get(ctx, rgName, deploymentName, nil)
 		},
-	}
+	}, nil
 }
 
-// generateDeploymentName generates a unique deployment name for ARM steps.
-// For outputOnly steps, it appends a random suffix to avoid conflicts when
-// the same step runs multiple times concurrently or sequentially.
-func generateDeploymentName(step *types.ARMStep) string {
-	if step.OutputOnly {
-		// Generate a random 8-character hex suffix for outputOnly steps
-		suffix := make([]byte, 4)
-		if _, err := rand.Read(suffix); err != nil {
-			// Fallback to timestamp if random generation fails
-			return fmt.Sprintf("%s-%d", step.Name, time.Now().Unix())
-		}
-		return fmt.Sprintf("%s-%s", step.Name, hex.EncodeToString(suffix))
-	}
-	return step.Name
-}
-
-func (a *armClient) getExistingDeployment(ctx context.Context, rgName, deploymentName string) (*armresources.DeploymentsClientGetResponse, error) {
-	resp, err := a.GetDeployment(ctx, rgName, deploymentName)
-	if err != nil && !strings.Contains(err.Error(), "ERROR CODE: DeploymentNotFound") {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-func (a *armClient) waitForExistingDeployment(ctx context.Context, timeOutInSeconds int, rgName, deploymentName string) error {
-	for timeOutInSeconds > 0 {
-		resp, err := a.getExistingDeployment(ctx, rgName, deploymentName)
-		if err != nil {
-			return fmt.Errorf("error getting deployment %w", err)
-		}
-		if resp.Properties == nil {
-			return nil
-		}
-		if *resp.Properties.ProvisioningState != armresources.ProvisioningStateRunning {
-			return nil
-		}
-		time.Sleep(time.Duration(a.deploymentRetryWaitTime) * time.Second)
-		timeOutInSeconds -= a.deploymentRetryWaitTime
-	}
-	return fmt.Errorf("timeout exeeded waiting for deployment %s in rg %s", deploymentName, rgName)
-}
-
-func (a *armClient) runArmStep(ctx context.Context, options *PipelineRunOptions, rgName string, step *types.ARMStep, input map[string]Output) (Output, error) {
+func (a *armClient) runArmStep(ctx context.Context, options *StepRunOptions, rgName string, id graph.Identifier, step *types.ARMStep, state *ExecutionState) (Output, DetailsProducer, error) {
 	// Ensure resourcegroup exists
-	err := a.ensureResourceGroupExists(ctx, rgName, options.NoPersist)
+	err := ensureResourceGroupExists(ctx, a.resourceGroupClient, a.Region, rgName, !options.NoPersist)
 	if err != nil {
-		return nil, fmt.Errorf("failed to ensure resource group exists: %w", err)
-	}
-
-	// Run deployment
-	deploymentName := generateDeploymentName(step)
-
-	if err := a.waitForExistingDeployment(ctx, options.DeploymentTimeoutSeconds, rgName, deploymentName); err != nil {
-		return nil, fmt.Errorf("error waiting for deploymenty %w", err)
+		return nil, nil, fmt.Errorf("failed to ensure resource group exists: %w", err)
 	}
 
 	if !options.DryRun || (options.DryRun && step.OutputOnly) {
-		return doWaitForDeployment(ctx, a.deploymentClient, rgName, deploymentName, step, filepath.Dir(options.PipelineFilePath), options.Configuration, input)
+		return doWaitForDeployment(ctx, a.bicepClient, a.deploymentClient, a.operationsClient, id.ServiceGroup, rgName, step, options.PipelineDirectory, options.StepCacheDir, options.Configuration, options.DeploymentTimeoutSeconds, options.RetryAttempt, state)
 	}
 
-	return doDryRun(ctx, a.deploymentClient, rgName, deploymentName, step, filepath.Dir(options.PipelineFilePath), options.Configuration, input)
+	return doDryRun(ctx, a.bicepClient, a.deploymentClient, id.ServiceGroup, rgName, step, options.PipelineDirectory, options.StepCacheDir, options.Configuration, state)
 }
 
 func recursivePrint(level int, change *armresources.WhatIfPropertyChange) {
@@ -206,17 +170,29 @@ func pollAndPrint[T any](ctx context.Context, p *runtime.Poller[T]) error {
 	return nil
 }
 
-func doDryRun(ctx context.Context, client *armresources.DeploymentsClient, rgName string, deploymentName string, step *types.ARMStep, pipelineWorkingDir string, cfg config.Configuration, input map[string]Output) (Output, error) {
+const charset = "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "0123456789"
+
+func randString() string {
+	output := strings.Builder{}
+	for i := 0; i < 32; i++ {
+		output.WriteByte(charset[rand.Intn(len(charset))])
+	}
+	return output.String()
+}
+
+func doDryRun(ctx context.Context, bicepClient *bicep.LSPClient, client *armresources.DeploymentsClient, sgName, rgName string, step *types.ARMStep, pipelineWorkingDir, stepCacheDir string, cfg configtypes.Configuration, state *ExecutionState) (Output, DetailsProducer, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	inputValues, err := getInputValues(step.Variables, cfg, input)
+	state.RLock()
+	inputValues, err := getInputValues(sgName, step.Variables, cfg, state.Outputs)
+	state.RUnlock()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get input values: %w", err)
+		return nil, nil, fmt.Errorf("failed to get input values: %w", err)
 	}
 	// Transform Bicep to ARM
-	deploymentProperties, err := transformBicepToARMWhatIfDeployment(ctx, step.Parameters, step.DeploymentMode, pipelineWorkingDir, cfg, inputValues)
+	deploymentProperties, err := transformBicepToARMWhatIfDeployment(ctx, bicepClient, step.Parameters, step.DeploymentMode, pipelineWorkingDir, cfg, inputValues)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform Bicep to ARM: %w", err)
+		return nil, nil, fmt.Errorf("failed to transform Bicep to ARM: %w", err)
 	}
 
 	// Create the deployment
@@ -224,31 +200,53 @@ func doDryRun(ctx context.Context, client *armresources.DeploymentsClient, rgNam
 		Properties: deploymentProperties,
 	}
 
+	inputs := whatIfInputs{
+		Properties:      deploymentProperties,
+		ResourceGroup:   rgName,
+		DeploymentLevel: step.DeploymentLevel,
+	}
+
+	skip, commit, err := checkSentinel(logger, inputs, stepCacheDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if skip {
+		return nil, nil, nil
+	}
+
+	deploymentName := randString()
+
 	if step.DeploymentLevel == "Subscription" {
 		// Hardcode until schema is adapted
 		deployment.Location = to.Ptr("eastus2")
 		poller, err := client.BeginWhatIfAtSubscriptionScope(ctx, deploymentName, deployment, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create WhatIf Deployment: %w", err)
+			return nil, nil, fmt.Errorf("failed to create WhatIf Deployment: %w", err)
 		}
 		logger.Info("WhatIf Deployment started", "deployment", deploymentName)
 		err = pollAndPrint(ctx, poller)
 		if err != nil {
-			return nil, fmt.Errorf("failed to poll and print: %w", err)
+			return nil, nil, fmt.Errorf("failed to poll and print: %w", err)
 		}
 	} else {
 		poller, err := client.BeginWhatIf(ctx, rgName, deploymentName, deployment, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create WhatIf Deployment: %w", err)
+			return nil, nil, fmt.Errorf("failed to create WhatIf Deployment: %w", err)
 		}
 		logger.Info("WhatIf Deployment started", "deployment", deploymentName)
 		err = pollAndPrint(ctx, poller)
 		if err != nil {
-			return nil, fmt.Errorf("failed to poll and print: %w", err)
+			return nil, nil, fmt.Errorf("failed to poll and print: %w", err)
 		}
 	}
 
-	return nil, nil
+	return nil, nil, commit()
+}
+
+type whatIfInputs struct {
+	Properties      *armresources.DeploymentWhatIfProperties
+	ResourceGroup   string
+	DeploymentLevel string
 }
 
 func pollAndGetOutput[T any](ctx context.Context, p *runtime.Poller[T]) (ArmOutput, error) {
@@ -268,33 +266,39 @@ func pollAndGetOutput[T any](ctx context.Context, p *runtime.Poller[T]) (ArmOutp
 		return nil, fmt.Errorf("unknown type %T", resp)
 	}
 
+	return armOutputFromOutputs(outputs), nil
+}
+
+func armOutputFromOutputs(outputs any) ArmOutput {
 	if outputs != nil {
 		if outputMap, ok := outputs.(map[string]any); ok {
 			returnMap := ArmOutput{}
 			for k, v := range outputMap {
 				returnMap[k] = v
 			}
-			return returnMap, nil
+			return returnMap
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func doWaitForDeployment(ctx context.Context, client *armresources.DeploymentsClient, rgName string, deploymentName string, step *types.ARMStep, pipelineWorkingDir string, cfg config.Configuration, input map[string]Output) (Output, error) {
+func doWaitForDeployment(ctx context.Context, bicepClient *bicep.LSPClient, client *armresources.DeploymentsClient, operationsClient *armresources.DeploymentOperationsClient, sgName, rgName string, step *types.ARMStep, pipelineWorkingDir, stepCacheDir string, cfg configtypes.Configuration, timeoutSeconds int, retryAttempt int, state *ExecutionState) (Output, DetailsProducer, error) {
 	logger := logr.FromContextOrDiscard(ctx)
 
-	inputValues, err := getInputValues(step.Variables, cfg, input)
+	state.RLock()
+	inputValues, err := getInputValues(sgName, step.Variables, cfg, state.Outputs)
+	state.RUnlock()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get input values: %w", err)
+		return nil, nil, fmt.Errorf("failed to get input values: %w", err)
 	}
 	// Transform Bicep to ARM
-	deploymentProperties, err := transformBicepToARMDeployment(ctx, step.Parameters, step.DeploymentMode, pipelineWorkingDir, cfg, inputValues)
+	deploymentProperties, err := transformBicepToARMDeployment(ctx, bicepClient, step.Parameters, step.DeploymentMode, pipelineWorkingDir, cfg, inputValues)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform Bicep to ARM: %w", err)
+		return nil, nil, fmt.Errorf("failed to transform Bicep to ARM: %w", err)
 	}
 
 	if hasTemplateResources(deploymentProperties.Template) && step.OutputOnly {
-		return nil, fmt.Errorf("deployment step %s is outputOnly, but contains resources", step.Name)
+		return nil, nil, fmt.Errorf("deployment step %s is outputOnly, but contains resources", step.Name)
 	}
 
 	// Create the deployment
@@ -302,61 +306,204 @@ func doWaitForDeployment(ctx context.Context, client *armresources.DeploymentsCl
 		Properties: deploymentProperties,
 	}
 
+	inputs := deploymentInputs{
+		Properties:      deploymentProperties,
+		ResourceGroup:   rgName,
+		DeploymentLevel: step.DeploymentLevel,
+		RetryAttempt:    retryAttempt,
+	}
+
+	digest, skip, commit, err := checkCachedOutput[ArmOutput](logger, inputs, stepCacheDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if skip != nil {
+		return skip, nil, nil
+	}
+
+	// when there's no step cache, there's no digest
+	deploymentName := randString()
+	if digest != "" {
+		deploymentName = digest
+	}
+
+	var output ArmOutput
+	var details DetailsProducer
+	exists, output, details, err := pollAndGetOutputFromExistingDeployment(ctx, client, operationsClient, timeoutSeconds, step.DeploymentLevel, rgName, deploymentName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to poll previously-existing deployment: %w", err)
+	}
+	if exists {
+		return output, details, commit(output)
+	}
+
+	logger.V(2).Info("Starting ARM deployment")
+	var pollErr error
 	if step.DeploymentLevel == "Subscription" {
+		details = DetermineOperationsForSubscriptionDeployment(operationsClient, deploymentName)
 		// Hardcode until schema is adapted
 		deployment.Location = to.Ptr("eastus2")
 		poller, err := client.BeginCreateOrUpdateAtSubscriptionScope(ctx, deploymentName, deployment, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create deployment: %w", err)
+			return nil, nil, fmt.Errorf("failed to create deployment: %w", err)
 		}
 		logger.V(1).Info("Deployment started", "deployment", deploymentName)
 
-		return pollAndGetOutput(ctx, poller)
+		output, pollErr = pollAndGetOutput(ctx, poller)
 	} else {
+		details = DetermineOperationsForResourceGroupDeployment(operationsClient, rgName, deploymentName)
 		poller, err := client.BeginCreateOrUpdate(ctx, rgName, deploymentName, deployment, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create deployment: %w", err)
+			return nil, nil, fmt.Errorf("failed to create deployment: %w", err)
 		}
 		logger.V(1).Info("Deployment started", "deployment", deploymentName)
 
-		return pollAndGetOutput(ctx, poller)
+		output, pollErr = pollAndGetOutput(ctx, poller)
 	}
+	if pollErr != nil {
+		return nil, nil, fmt.Errorf("failed to poll deployment: %w", pollErr)
+	}
+
+	return output, details, commit(output)
 }
 
-func (a *armClient) ensureResourceGroupExists(ctx context.Context, rgName string, rgNoPersist bool) error {
-	// Check if the resource group exists
-	// Once the persist tag is set to true, it should not be removed by automation... tooo dangerous
-	rg, err := a.resourceGroupClient.Get(ctx, rgName, nil)
+// pollAndGetOutputFromExistingDeployment papers over the unfortunate reality that armresources.DeploymentClient has
+// no mechanism to create a poller for an existing deployment - relegating us to a manual polling loop.
+func pollAndGetOutputFromExistingDeployment(ctx context.Context, client *armresources.DeploymentsClient, operationsClient *armresources.DeploymentOperationsClient, timeoutSeconds int, deploymentLevel, resourceGroup, deploymentName string) (bool, ArmOutput, DetailsProducer, error) {
+	logger, err := logr.FromContext(ctx)
 	if err != nil {
-		// Create the resource group
-		tags := map[string]*string{}
-		if !rgNoPersist {
-			// if no-persist is set, don't set the persist tag, needs double negotiate, cause default should be true
-			tags["persist"] = to.Ptr("true")
+		return false, nil, nil, err
+	}
+	logger = logger.WithValues("deployment", deploymentName)
+
+	var details DetailsProducer
+	var get func(ctx context.Context) (output *armresources.DeploymentPropertiesExtended, err error)
+	if deploymentLevel == "Subscription" {
+		details = DetermineOperationsForSubscriptionDeployment(operationsClient, deploymentName)
+		get = func(ctx context.Context) (output *armresources.DeploymentPropertiesExtended, err error) {
+			response, err := client.GetAtSubscriptionScope(ctx, deploymentName, nil)
+			return response.Properties, err
 		}
+	} else {
+		details = DetermineOperationsForResourceGroupDeployment(operationsClient, resourceGroup, deploymentName)
+		get = func(ctx context.Context) (output *armresources.DeploymentPropertiesExtended, err error) {
+			response, err := client.Get(ctx, resourceGroup, deploymentName, nil)
+			return response.Properties, err
+		}
+	}
+
+	logger.V(4).Info("Searching for pre-existing deployment")
+	output, err := get(ctx)
+	var azerror *azcore.ResponseError
+	notFound := errors.As(err, &azerror) && azerror.StatusCode == http.StatusNotFound
+	if notFound {
+		return false, nil, nil, nil
+	}
+
+	logger.V(2).Info("Waiting for existing deployment to complete")
+	remainingTime := timeoutSeconds
+	for remainingTime > 0 {
+		if err != nil {
+			return false, nil, nil, fmt.Errorf("failed to look up pre-existing deployment: %w", err)
+		}
+		if output.ProvisioningState == nil {
+			return false, nil, nil, fmt.Errorf("failed to look up pre-existing deployment: found a nil provisioning state")
+		}
+		switch *output.ProvisioningState {
+		case armresources.ProvisioningStateCanceled, armresources.ProvisioningStateDeleted, armresources.ProvisioningStateDeleting, armresources.ProvisioningStateFailed, armresources.ProvisioningStateNotSpecified:
+			if output.Error != nil {
+				return false, nil, nil, fmt.Errorf("pre-existing deployment failed: %w", createError(*output.Error))
+			}
+			return false, nil, nil, fmt.Errorf("pre-existing deployment: provisioning state is %s", *output.ProvisioningState)
+		case armresources.ProvisioningStateSucceeded:
+			logger.V(2).Info("short-circuiting using results from previously-succeeded deployment")
+			return true, armOutputFromOutputs(output.Outputs), details, nil
+		case armresources.ProvisioningStateAccepted, armresources.ProvisioningStateCreated, armresources.ProvisioningStateCreating, armresources.ProvisioningStateReady, armresources.ProvisioningStateRunning, armresources.ProvisioningStateUpdating:
+			// keep waiting for the deployment to finish
+		}
+		time.Sleep(15 * time.Second)
+		remainingTime -= 15
+
+		output, err = get(ctx)
+	}
+	return false, nil, nil, errors.New("timed out waiting for pre-existing deployment to finish")
+}
+
+type deploymentInputs struct {
+	Properties      *armresources.DeploymentProperties
+	ResourceGroup   string
+	DeploymentLevel string
+	RetryAttempt    int
+}
+
+// computeResourceGroupTags determines the final tags for a resource group based on existing tags and persist settings.
+//
+// Persist tag rules:
+// 1. If persist tag already exists and is "true", it must be preserved (safety: never remove protection)
+// 2. If persist is true, set persist tag to "true"
+// 3. If persist is false and persist tag doesn't exist or isn't "true", don't add it
+//
+// This function is pure and easily testable - it only depends on its inputs.
+func computeResourceGroupTags(existingTags map[string]*string, persist bool) map[string]*string {
+	// Start with a copy of existing tags to avoid modifying the original
+	var resultTags map[string]*string
+	if existingTags != nil {
+		resultTags = maps.Clone(existingTags)
+	} else {
+		resultTags = make(map[string]*string)
+	}
+
+	// Check current persist tag value
+	currentPersistValue := ""
+	if existingTags != nil && existingTags["persist"] != nil {
+		currentPersistValue = *existingTags["persist"]
+	}
+
+	// Apply persist tag rules
+	if currentPersistValue == "true" || persist {
+		// Rule 1: Always preserve existing persist=true (critical safety rule)
+		// Rule 2: Set persist=true when persist is true
+		resultTags["persist"] = to.Ptr("true")
+	} else {
+		// Rule 3: Remove persist tag when persist is false and existing persist != "true"
+		delete(resultTags, "persist")
+	}
+	return resultTags
+}
+
+func ensureResourceGroupExists(ctx context.Context, resourceGroupClient *armresources.ResourceGroupsClient, region, rgName string, persist bool) error {
+	rg, err := resourceGroupClient.Get(ctx, rgName, nil)
+	if err != nil {
+		// Resource group doesn't exist - create it
+		// We don't have any existing tags, so pass an empty map instead of nil for clarity.
+		tags := computeResourceGroupTags(map[string]*string{}, persist)
 		resourceGroup := armresources.ResourceGroup{
-			Location: to.Ptr(a.Region),
+			Location: to.Ptr(region),
 			Tags:     tags,
 		}
-		_, err = a.resourceGroupClient.CreateOrUpdate(ctx, rgName, resourceGroup, nil)
+		_, err = resourceGroupClient.CreateOrUpdate(ctx, rgName, resourceGroup, nil)
 		if err != nil {
 			return fmt.Errorf("failed to create resource group: %w", err)
 		}
 	} else {
-		tags := rg.Tags
-		if tags == nil {
-			tags = map[string]*string{}
-		}
-		if !rgNoPersist {
-			// if no-persist is set, don't set the persist tag, needs double negotiate, cause default should be true
-			tags["persist"] = to.Ptr("true")
-		}
-		patchResourceGroup := armresources.ResourceGroupPatchable{
-			Tags: tags,
-		}
-		_, err = a.resourceGroupClient.Update(ctx, rgName, patchResourceGroup, nil)
-		if err != nil {
-			return fmt.Errorf("failed to update resource group: %w", err)
+		// Resource group exists - only update tags if they changed
+		tags := computeResourceGroupTags(rg.Tags, persist)
+		if !maps.EqualFunc(rg.Tags, tags, func(a, b *string) bool {
+			if a == nil && b == nil {
+				return true
+			}
+			if a == nil || b == nil {
+				return false
+			}
+			return *a == *b
+		}) {
+			patchResourceGroup := armresources.ResourceGroupPatchable{
+				Tags: tags,
+			}
+			_, err = resourceGroupClient.Update(ctx, rgName, patchResourceGroup, nil)
+			if err != nil {
+				return fmt.Errorf("failed to update resource group: %w", err)
+			}
 		}
 	}
 	return nil

@@ -16,7 +16,11 @@ package arm
 
 import (
 	"iter"
+	"path"
 	"slices"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/util/sets"
 
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 )
@@ -24,22 +28,31 @@ import (
 // SubscriptionAPIVersion is the system API version for the subscription endpoint.
 const SubscriptionAPIVersion = "2.0"
 
+func ToSubscriptionResourceID(subscriptionName string) (*azcorearm.ResourceID, error) {
+	return azcorearm.ParseResourceID(ToSubscriptionResourceIDString(subscriptionName))
+}
+
+func ToSubscriptionResourceIDString(subscriptionName string) string {
+	return strings.ToLower(path.Join("/subscriptions", subscriptionName))
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type Subscription struct {
+	CosmosMetadata `json:"cosmosMetadata"`
+
+	// kept so untyped client can function
+	ResourceID *azcorearm.ResourceID `json:"resourceId,omitempty"`
+
 	// The resource provider contract gives an example RegistrationDate
 	// in RFC1123 format but does not explicitly state a required format
 	// so we leave it a plain string.
-	State            SubscriptionState       `json:"state"            validate:"required_for_put,enum_subscriptionstate"`
-	RegistrationDate *string                 `json:"registrationDate" validate:"required_for_put"`
+	State            SubscriptionState       `json:"state"`
+	RegistrationDate *string                 `json:"registrationDate"`
 	Properties       *SubscriptionProperties `json:"properties"`
 
 	// LastUpdated is a copy of the Cosmos DB system generated
 	// "_ts" last updated timestamp field for metrics reporting.
 	LastUpdated int `json:"-"`
-}
-
-// GetValidTypes returns the valid resource types for a Subscription.
-func (s Subscription) GetValidTypes() []string {
-	return []string{azcorearm.SubscriptionResourceType.String()}
 }
 
 type SubscriptionProperties struct {
@@ -84,6 +97,16 @@ const (
 	SubscriptionStateSuspended    SubscriptionState = "Suspended"
 )
 
+var (
+	ValidSubscriptionStates = sets.New(
+		SubscriptionStateRegistered,
+		SubscriptionStateUnregistered,
+		SubscriptionStateWarned,
+		SubscriptionStateDeleted,
+		SubscriptionStateSuspended,
+	)
+)
+
 // ListSubscriptionStates returns an iterator that yields all recognized
 // SubscriptionState values. This function is intended as a test aid.
 func ListSubscriptionStates() iter.Seq[SubscriptionState] {
@@ -94,4 +117,23 @@ func ListSubscriptionStates() iter.Seq[SubscriptionState] {
 		SubscriptionStateDeleted,
 		SubscriptionStateSuspended,
 	})
+}
+
+// HasRegisteredFeature checks if a subscription has a specific feature registered.
+// The feature name should be in the format "Microsoft.Provider/FeatureName".
+// Returns true if the feature is present and its state is "Registered", false otherwise.
+func (s *Subscription) HasRegisteredFeature(featureName string) bool {
+	if s.Properties == nil || s.Properties.RegisteredFeatures == nil {
+		return false
+	}
+
+	for _, feature := range *s.Properties.RegisteredFeatures {
+		if feature.Name != nil && *feature.Name == featureName {
+			if feature.State != nil && *feature.State == "Registered" {
+				return true
+			}
+		}
+	}
+
+	return false
 }

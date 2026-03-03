@@ -15,21 +15,25 @@
 package labels
 
 import (
-	ginkgo "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2"
 )
 
-// Positivity of test cases
+// TODO makes these ginkgo.Labels produced by ginkgo.Label (notice the plural return) into strings and refactor the test usage.
+
 var (
-	Positive = ginkgo.Label("Positive")
-	Negative = ginkgo.Label("Negative")
+	// Positivity of test cases
+	Positive = ginkgo.Label("Positivity:Positive")
+	Negative = ginkgo.Label("Positivity:Negative")
+
+	Slow = ginkgo.Label("Speed:Slow")
 )
 
 // Importance of test cases
 var (
-	Low      = ginkgo.Label("Low")
-	Medium   = ginkgo.Label("Medium")
-	High     = ginkgo.Label("High")
-	Critical = ginkgo.Label("Critical")
+	Low      = ginkgo.Label("Importance:Low")
+	Medium   = ginkgo.Label("Importance:Medium")
+	High     = ginkgo.Label("Importance:High")
+	Critical = ginkgo.Label("Importance:Critical")
 )
 
 // Usage of test cases
@@ -38,4 +42,19 @@ var (
 	CreateCluster      = ginkgo.Label("Create-Cluster")
 	SetupValidation    = ginkgo.Label("Setup-Validation")
 	TeardownValidation = ginkgo.Label("Teardown-Validation")
+)
+
+var (
+	DevelopmentOnly = ginkgo.Label("Development-Only")
+	IntegrationOnly = ginkgo.Label("Integration-Only")
+	// A test case is ARO-HCP-RP-API-Compatible if it doesn't use ARM API (eg.
+	// ARM templates) to communicate with ARO HCP RP, so that it can run
+	// against either ARO HCP RP or ARM endpoint.
+	AroRpApiCompatible = ginkgo.Label("ARO-HCP-RP-API-Compatible")
+)
+
+// Environments this test can be used in.
+var (
+	RequireNothing        = ginkgo.Label("PreLaunchSetup:None")
+	RequireHappyPathInfra = ginkgo.Label("PreLaunchSetup:HappyPathInfra")
 )

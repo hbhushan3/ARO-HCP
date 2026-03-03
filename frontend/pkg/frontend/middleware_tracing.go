@@ -26,6 +26,7 @@ import (
 
 	"github.com/Azure/ARO-HCP/internal/api/arm"
 	"github.com/Azure/ARO-HCP/internal/tracing"
+	"github.com/Azure/ARO-HCP/internal/utils"
 )
 
 // MiddlewareTracing starts an OpenTelemetry span wrapping all incoming HTTP
@@ -43,14 +44,14 @@ func middlewareTracing(w http.ResponseWriter, r *http.Request, next http.Handler
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var (
 				ctx    = r.Context()
-				logger = LoggerFromContext(ctx)
+				logger = utils.LoggerFromContext(ctx)
 			)
 
 			data, err := CorrelationDataFromContext(ctx)
 			if err != nil {
 				span := trace.SpanFromContext(ctx)
 				span.RecordError(err)
-				logger.ErrorContext(ctx, "failed to find correlation data in context", "error", err)
+				logger.Error(err, "failed to find correlation data in context")
 				next(w, r)
 				return
 			}
@@ -72,7 +73,7 @@ func middlewareTracing(w http.ResponseWriter, r *http.Request, next http.Handler
 // the context does not maintain a span, the function has no effect.
 func addCorrelationDataToSpanContext(ctx context.Context, data *arm.CorrelationData) context.Context {
 	var (
-		logger = LoggerFromContext(ctx)
+		logger = utils.LoggerFromContext(ctx)
 		span   = trace.SpanFromContext(ctx)
 	)
 
@@ -103,9 +104,8 @@ func addCorrelationDataToSpanContext(ctx context.Context, data *arm.CorrelationD
 
 		m, err := baggage.NewMemberRaw(string(e.attr), e.value)
 		if err != nil {
-			msg := fmt.Sprintf("unable to create baggage member %q", e.attr)
-			span.RecordError(fmt.Errorf("%s: %w", msg, err))
-			logger.ErrorContext(ctx, msg, "error", err)
+			span.RecordError(fmt.Errorf("unable to create baggage member %q: %w", e.attr, err))
+			logger.Error(err, "unable to create baggage member", "attr", e.attr)
 
 			continue
 		}

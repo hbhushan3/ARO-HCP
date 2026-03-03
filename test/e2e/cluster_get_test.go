@@ -17,47 +17,49 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	api "github.com/Azure/ARO-HCP/internal/api/v20240610preview/generated"
+	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/integration"
 	"github.com/Azure/ARO-HCP/test/util/labels"
 )
 
 var _ = Describe("Get HCPOpenShiftCluster", func() {
 	var (
-		clustersClient *api.HcpOpenShiftClustersClient
-		customerEnv    *integration.CustomerEnv
-		clusterInfo    *integration.Cluster
+		customerEnv *integration.CustomerEnv
+		clusterInfo *integration.Cluster
 	)
 
 	BeforeEach(func() {
-		By("Preparing HCP clusters client")
-		clustersClient = clients.NewHcpOpenShiftClustersClient()
 		By("Preparing customer environment values")
 		customerEnv = &e2eSetup.CustomerEnv
 		clusterInfo = &e2eSetup.Cluster
 	})
 
 	Context("Positive", func() {
-		It("Confirms cluster has been created successfully", labels.Medium, labels.Positive, labels.SetupValidation, func(ctx context.Context) {
+		It("Confirms cluster has been created successfully", labels.RequireHappyPathInfra, labels.Medium, labels.Positive, labels.SetupValidation, func(ctx context.Context) {
+			tc := framework.NewTestContext()
+
 			By("Checking Provisioning state with RP")
-			out, err := clustersClient.Get(ctx, customerEnv.CustomerRGName, clusterInfo.Name, nil)
+			out, err := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient().Get(ctx, customerEnv.CustomerRGName, clusterInfo.Name, nil)
 			Expect(err).To(BeNil())
 			Expect(string(*out.Properties.ProvisioningState)).To(Equal(("Succeeded")))
 		})
 	})
 
 	Context("Negative", func() {
-		It("Fails to get a nonexistent cluster with a Not Found error", labels.Medium, labels.Negative, func(ctx context.Context) {
+		It("Fails to get a nonexistent cluster with a Not Found error", labels.RequireHappyPathInfra, labels.Medium, labels.Negative, func(ctx context.Context) {
+			tc := framework.NewTestContext()
+
 			clusterName := "non-existing-cluster"
 			By("Sending a GET request for the nonexistent cluster")
-			_, err := clustersClient.Get(ctx, customerEnv.CustomerRGName, clusterName, nil)
+			_, err := tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient().Get(ctx, customerEnv.CustomerRGName, clusterName, nil)
 			Expect(err).ToNot(BeNil())
-			errMessage := fmt.Sprintf("The resource 'hcpOpenShiftClusters/%s' under resource group '%s' was not found.", clusterName, customerEnv.CustomerRGName)
-			Expect(err.Error()).To(ContainSubstring(errMessage))
+			errMessage := fmt.Sprintf("hcpOpenShiftClusters/%s' under resource group '%s' was not found.", clusterName, customerEnv.CustomerRGName)
+			Expect(strings.ToLower(err.Error())).To(ContainSubstring(strings.ToLower(errMessage)))
 		})
 	})
 })

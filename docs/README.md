@@ -22,9 +22,9 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - [CS PR environment](cspr.md)
   - [Personal perfscale environment](perscale-deployment.md)
 - MSFT deployment environments
-  - [MSIT INT](msit-int.md)
+  - [MSIT INT](environments.md#msit-corp-tenant-msft-int-tenant)
 
-### Networking
+### Networking and DNS
 
 - [Ingress and Egress Concept](ingress-egress.md)
   - Service and management cluster ingress and egress
@@ -34,9 +34,12 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - Mesh management
   - Upgrades
   - Traffic control
-- [Network Security](ops/network-security.md)
+- [Network Security](network-security.md)
   - Private Links
   - Network Security Perimeter
+- [DNS](dns.md)
+  - Overview of the DNS hierarchies and how they are managed
+  - SVC and CX zones
 
 ### [Configuration Management](configuration.md)
 
@@ -64,9 +67,18 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
 - [Secret Syncronization](secret-sync.md)
   - documents tools/processes to sync secrets
 
+### Testing and CI
+
+- [Prow](prow.md)
+  - Overview of Prow-based CI infrastructure
+  - Presubmit and periodic jobs
+  - How to trigger and monitor tests
+  - EV2 pipeline integration
+
 ### Observability
 
 - [Grafana Dashboards](grafana-dashboards.md)
+- [Logging](logging.md)
 - [Prometheus Rules](prometheus-rules.md)
 
 ### Guides and Operations
@@ -77,5 +89,7 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - How to bump service component image digests in RH and MSFT environments
 - [High Level HCP Creation Flow](ops/hcp-cluster-creation-flow.md)
   - Walkthrough of an HCP cluster creation process through all the service layers of ARO HCP
+- [Postgres Breakglass](ops/postgres-breakglass.md)
+  - How to access the Postgres database
 
 ### [Terminology](terminology.md)

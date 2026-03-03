@@ -1,25 +1,26 @@
 $schema: pipeline.schema.v1
-serviceGroup: Microsoft.Azure.ARO.Test
+serviceGroup: Microsoft.Azure.ARO.HCP.Test
 rolloutName: Test Rollout
 resourceGroups:
-- name: '{{ .regionRG  }}'
-  subscription: '{{ .serviceClusterSubscription  }}'
+- name: regional
+  resourceGroup: '{{ .regionRG }}'
+  subscription: '{{ .serviceClusterSubscription }}'
   steps:
   - name: deploy
-    aksCluster: '{{ .aksName  }}'
+    aksCluster: '{{ .aksName }}'
     action: Shell
     command: make deploy
     shellIdentity:
-      configRef: aroDevopsMsiId
+      configRef: globalMSIId
     variables:
     - name: MAESTRO_IMAGE
       configRef: maestro_image
   - name: dry-run
-    aksCluster: '{{ .aksName  }}'
+    aksCluster: '{{ .aksName }}'
     action: Shell
     command: make deploy
     shellIdentity:
-      configRef: aroDevopsMsiId
+      configRef: globalMSIId
     dryRun:
       variables:
       - name: DRY_RUN
@@ -45,7 +46,8 @@ resourceGroups:
     childZone:
       configRef: childZone
     dependsOn:
-    - deploy
+    - resourceGroup: regional
+      step: deploy
   - name: issuerTest
     action: SetCertificateIssuer
     vaultBaseUrl:
@@ -53,17 +55,17 @@ resourceGroups:
     issuer:
       configRef: provider
     dependsOn:
-    - deploy
+    - resourceGroup: regional
+      step: deploy
   - name: issuerTestOutputChaining
     action: SetCertificateIssuer
     vaultBaseUrl:
       input:
+        resourceGroup: regional
         name: kvUrl
         step: deploy
     issuer:
       value: provider
-    dependsOn:
-    - deploy
   - name: cert
     action: CreateCertificate
     vaultBaseUrl:

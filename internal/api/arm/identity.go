@@ -14,18 +14,20 @@
 
 package arm
 
+import "k8s.io/apimachinery/pkg/util/sets"
+
 // Represents to support the ManagedServiceIdentity ARM resource.
 type ManagedServiceIdentity struct {
-	PrincipalID            string                           `json:"principalId,omitempty"            visibility:"read"`
-	TenantID               string                           `json:"tenantId,omitempty"               visibility:"read"`
-	Type                   ManagedServiceIdentityType       `json:"type"                                               validate:"omitempty,enum_managedserviceidentitytype"`
-	UserAssignedIdentities map[string]*UserAssignedIdentity `json:"userAssignedIdentities,omitempty"                   validate:"dive,keys,resource_id=Microsoft.ManagedIdentity/userAssignedIdentities,endkeys"`
+	PrincipalID            string                           `json:"principalId,omitempty"`
+	TenantID               string                           `json:"tenantId,omitempty"`
+	Type                   ManagedServiceIdentityType       `json:"type"`
+	UserAssignedIdentities map[string]*UserAssignedIdentity `json:"userAssignedIdentities,omitempty"`
 }
 
 // UserAssignedIdentity - User assigned identity properties https://azure.github.io/typespec-azure/docs/libraries/azure-resource-manager/reference/data-types/#Azure.ResourceManager.CommonTypes.UserAssignedIdentity
 type UserAssignedIdentity struct {
-	ClientID    *string `json:"clientId,omitempty"    visibility:"read"`
-	PrincipalID *string `json:"principalId,omitempty" visibility:"read"`
+	ClientID    *string `json:"clientId,omitempty"`
+	PrincipalID *string `json:"principalId,omitempty"`
 }
 
 type ManagedServiceIdentityType string
@@ -35,4 +37,12 @@ const (
 	ManagedServiceIdentityTypeSystemAssigned             ManagedServiceIdentityType = "SystemAssigned"
 	ManagedServiceIdentityTypeSystemAssignedUserAssigned ManagedServiceIdentityType = "SystemAssigned,UserAssigned"
 	ManagedServiceIdentityTypeUserAssigned               ManagedServiceIdentityType = "UserAssigned"
+)
+
+var (
+	ValidManagedServiceIdentityTypes = sets.New[ManagedServiceIdentityType](
+		ManagedServiceIdentityTypeNone,
+		ManagedServiceIdentityTypeSystemAssigned,
+		ManagedServiceIdentityTypeSystemAssignedUserAssigned,
+		ManagedServiceIdentityTypeUserAssigned)
 )

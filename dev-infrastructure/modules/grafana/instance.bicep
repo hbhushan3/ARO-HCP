@@ -29,6 +29,9 @@ var grafanaRolesArray = [
   }
 ]
 
+@description('Cross-tenant security group for Grafana access (format: GroupObjectId;TenantId)')
+param crossTenantSecurityGroup string
+
 resource grafana 'Microsoft.Dashboard/grafana@2024-10-01' = {
   name: grafanaName
   location: location
@@ -38,6 +41,15 @@ resource grafana 'Microsoft.Dashboard/grafana@2024-10-01' = {
   identity: {
     type: 'SystemAssigned'
   }
+  tags: !empty(crossTenantSecurityGroup)
+    ? {
+        // To enable AMG cross-tenant login, add a tag with a security group from CORP tenant
+        // The tag references a security group in CORP tenant which can access the AMG in the secure tenant.
+        // Format: GroupObjectId;TenantId
+        // Users who are members of the cross-tenant security group can access AMG with Grafana Viewer role
+        'AMG.CrossTenant.SecurityGroup': crossTenantSecurityGroup
+      }
+    : {}
   properties: {
     grafanaIntegrations: {
       azureMonitorWorkspaceIntegrations: [
@@ -81,3 +93,4 @@ resource grafanaRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-
 ]
 
 output grafanaId string = grafana.id
+output grafanaPrincipalId string = grafana.identity.principalId

@@ -20,23 +20,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	api "github.com/Azure/ARO-HCP/internal/api/v20240610preview/generated"
+	hcpsdk20240610preview "github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
+	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/integration"
 	"github.com/Azure/ARO-HCP/test/util/labels"
 )
 
 var _ = Describe("Get HCPOpenShiftCluster nodepool", func() {
 	var (
-		NodePoolsClient *api.NodePoolsClient
 		clusterEnv      *integration.Cluster
-		nodePoolOptions *api.NodePoolsClientGetOptions
+		nodePoolOptions *hcpsdk20240610preview.NodePoolsClientGetOptions
 		customerEnv     *integration.CustomerEnv
 		nodePools       *[]integration.Nodepool
 	)
 
 	BeforeEach(func() {
-		By("Prepare HCPOpenshiftCluster nodepool client")
-		NodePoolsClient = clients.NewNodePoolsClient()
 		By("Prepare customer environment values")
 		customerEnv = &e2eSetup.CustomerEnv
 		nodePools = &e2eSetup.Nodepools
@@ -44,12 +42,14 @@ var _ = Describe("Get HCPOpenShiftCluster nodepool", func() {
 	})
 
 	Context("Positive", func() {
-		It("Get each nodepool from HCPOpenShiftCluster", labels.Medium, labels.Positive, labels.SetupValidation, func(ctx context.Context) {
+		It("Get each nodepool from HCPOpenShiftCluster", labels.RequireHappyPathInfra, labels.Medium, labels.Positive, labels.SetupValidation, func(ctx context.Context) {
+			tc := framework.NewTestContext()
+
 			if nodePools != nil {
 				nps := *nodePools
 				for np := range nps {
 					By("Send get request for nodepool")
-					clusterNodePool, err := NodePoolsClient.Get(ctx, customerEnv.CustomerRGName, clusterEnv.Name, nps[np].Name, nodePoolOptions)
+					clusterNodePool, err := tc.Get20240610ClientFactoryOrDie(ctx).NewNodePoolsClient().Get(ctx, customerEnv.CustomerRGName, clusterEnv.Name, nps[np].Name, nodePoolOptions)
 					Expect(err).To(BeNil())
 					Expect(clusterNodePool).ToNot(BeNil())
 					By("Check to see nodepool exists and is successfully provisioned")

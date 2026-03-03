@@ -24,9 +24,6 @@ param maxClientSessionsPerAuthName int
 ])
 param publicNetworkAccess string
 
-@description('Log Analytics Workspace ID if logging to Log Analytics')
-param logAnalyticsWorkspaceId string = ''
-
 param certificateIssuer string
 
 //
@@ -56,55 +53,31 @@ resource eventGridNamespace 'Microsoft.EventGrid/namespaces@2024-12-15-preview' 
   }
 }
 
-resource eventGridNamespaceDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (logAnalyticsWorkspaceId != '') {
-  scope: eventGridNamespace
-  name: eventGridNamespaceName
-  properties: {
-    logs: [
-      {
-        category: 'SuccessfulMqttConnections'
-        enabled: true
-      }
-      {
-        category: 'FailedMqttConnections'
-        enabled: true
-      }
-      {
-        category: 'MqttDisconnections'
-        enabled: true
-      }
-      {
-        category: 'FailedMqttPublishedMessages'
-        enabled: true
-      }
-      {
-        category: 'FailedMqttSubscriptionOperations'
-        enabled: true
-      }
-      {
-        category: 'SuccessfulHttpDataPlaneOperations'
-        enabled: true
-      }
-      {
-        category: 'FailedHttpDataPlaneOperations'
-        enabled: true
-      }
-    ]
-    workspaceId: logAnalyticsWorkspaceId
-  }
-}
-
 // find a better way to register the OneCert
 resource certificateSignerCA 'Microsoft.EventGrid/namespaces/caCertificates@2024-12-15-preview' = if (startsWith(
   certificateIssuer,
   'OneCert'
 )) {
   parent: eventGridNamespace
+  // deprecate this in favor of amerootv2 after migration is complete
   name: 'ameroot'
   properties: {
     description: 'root certificate for OneCertV2-PrivateCA'
     // this expires in May 2026 !!!!
     encodedCertificate: replace(loadTextContent('../../ca/AMEROOT_ameroot.pem'), '\n', '')
+  }
+}
+
+resource certificateSignerCAameV2 'Microsoft.EventGrid/namespaces/caCertificates@2024-12-15-preview' = if (startsWith(
+  certificateIssuer,
+  'OneCert'
+)) {
+  parent: eventGridNamespace
+  name: 'amerootv2'
+  properties: {
+    description: 'AMEV2 root certificate for OneCertV2-PrivateCA'
+    // this expires in Feb 2049 !!!!
+    encodedCertificate: replace(loadTextContent('../../ca/AMEROOT_amerootv2.pem'), '\n', '')
   }
 }
 

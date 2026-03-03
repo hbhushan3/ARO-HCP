@@ -2,8 +2,9 @@ SHELL = /bin/bash
 DEPLOY_ENV ?= pers
 CLOUD ?= dev
 PRINCIPAL_ID ?= $(shell az ad signed-in-user show -o json | jq -r '.id')
-$(shell ./create-config.sh $(DEPLOY_ENV))
-include config.mk
+
+-include ../setup-templatize-env.mk
+-include ../.bingo/Variables.mk
 
 # Set SKIP_CONFIRM to a non-empty value to skip "what-if" confirmation prompts.
 ifndef SKIP_CONFIRM
@@ -22,7 +23,15 @@ MGMG_RG_DEPLOYMENT_NAME ?= mgmt${DEPLOYMENT_NAME_SUFFIX}
 SVC_RG_DEPLOYMENT_NAME ?= svc${DEPLOYMENT_NAME_SUFFIX}
 REGIONAL_RG_DEPLOYMENT_NAME ?= region${DEPLOYMENT_NAME_SUFFIX}
 ROLE_ASSIGNMENTS_DEPLOYMENT_NAME ?= role-assignments${DEPLOYMENT_NAME_SUFFIX}
-AUTOMATION_ACCOUNT_RG = "hcp-dev-automation-account"
+
+# Subscription IDs
+DEV_TESTING_SUBSCRIPTION_ID = 1d3378d3-5a3f-4712-85a1-2485495dfc4b
+INT_TESTING_SUBSCRIPTION_ID = 64f0619f-ebc2-4156-9d91-c4c781de7e54
+STAGE_TESTING_SUBSCRIPTION_ID = b23756f7-4594-40a3-980f-10bb6168fc20
+E2E_TESTING_SUBSCRIPTION_ID = 974ebd46-8ad3-41e3-afef-7ef25fd5c371
+
+# Environments where automation accounts are deployed
+AUTOMATION_ACCOUNT_ENVS = dev stage int e2e
 
 list:
 	@grep '^[^#[:space:]].*:' Makefile
@@ -42,6 +51,21 @@ lint:
 	@echo "Running make lint in parallel across $(NPROC) cores"
 	@$(MAKE) -j$(NPROC) _lint
 
+.deploy-env-ctx: FORCE
+	@echo "$(DEPLOY_ENV):$(USER):$(REGION)" | cmp -s - $@ || echo "$(DEPLOY_ENV):$(USER):$(REGION)" > $@
+
+FORCE:
+.PHONY: FORCE
+
+%.bicepparam: $(TEMPLATIZE) $(CONFIG_FILE) $(DEV_SETTINGS_FILE) .deploy-env-ctx
+	$(TEMPLATIZE) generate \
+		--config-file $(CONFIG_FILE) \
+		--dev-settings-file $(DEV_SETTINGS_FILE) \
+		--dev-environment $(DEPLOY_ENV) \
+		--input "$(basename $@).tmpl.bicepparam" \
+		--region $(REGION) \
+		--output "$@"
+
 %.bicep.fmt %.bicepparam.fmt:
 	@AZURE_BICEP_CHECK_VERSION=False az bicep format --file $(basename $@) 2>&1 | awk 'NF'
 
@@ -59,7 +83,7 @@ feature-registration: # hardcoded to eastus as this is a subscription deployment
 # Create mock identities for the INT environment
 # This is done within the subscription the customer MRG / nodepools would be created
 # Manually lift/shift the cert/keys to the MSIT environment keyvault
-create-int-mock-identities:
+create-int-mock-identities: configurations/mock-identities.bicepparam
 	MSI_MOCK_ROLE_NAME=int-msi-mock && \
 	FIRST_PARTY_ROLE_NAME=int-first-party && \
 	FIRST_PARTY_CERT_NAME=intFirstPartyCert && \
@@ -94,22 +118,34 @@ create-int-mock-identities:
 	ROLE_DEFINITION_NAME='Role Based Access Control Administrator' \
 	SUBSCRIPTION_ID=$(shell az account show --query id --output tsv) \
 	./scripts/create-sp-for-rbac.sh && \
+	az role assignment create \
+		--role "Contributor" \
+		--assignee "$(shell az ad app list --display-name aro-hcp-int-arm-helper --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(shell az account show --query id --output tsv)" \
+		--only-show-errors
 	APPLICATION_NAME=aro-hcp-int-msi-mock \
 	KEY_VAULT_NAME=aro-hcp-int-kv \
 	CERTIFICATE_NAME=$${MSI_MOCK_CERT_NAME} \
 	ROLE_DEFINITION_NAME=$${MSI_MOCK_ROLE_NAME} \
 	SUBSCRIPTION_ID=$(shell az account show --query id --output tsv) \
-	./scripts/create-sp-for-rbac.sh
+	./scripts/create-sp-for-rbac.sh && \
+	az role assignment create \
+		--role "Key Vault Crypto User" \
+		--assignee "$(shell az ad app list --display-name aro-hcp-int-msi-mock --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(shell az account show --query id --output tsv)" \
+		--only-show-errors
 
 .PHONY: create-mock-identities
 
-create-mock-identities:
+create-mock-identities: configurations/mock-identities.bicepparam
 	az deployment group wait --created --name "aro-hcp-dev-mock-certificates" --resource-group $(GLOBAL_RESOURCEGROUP) --interval 10
 	az deployment group create \
 		--name "aro-hcp-dev-mock-certificates" \
 		--resource-group $(GLOBAL_RESOURCEGROUP) \
 		--template-file templates/mock-identities.bicep $(PROMPT_TO_CONFIRM) \
-		--parameters configurations/mock-identities.bicepparam
+		--parameters configurations/mock-identities.bicepparam \
+		--parameters e2eTestSubscription=974ebd46-8ad3-41e3-afef-7ef25fd5c371
+
 	APPLICATION_NAME=aro-dev-first-party2 \
 	KEY_VAULT_NAME=aro-hcp-dev-svc-kv \
 	CERTIFICATE_NAME=firstPartyCert2 \
@@ -124,6 +160,12 @@ create-mock-identities:
 	SUBSCRIPTION_ID=$(shell az account show --query id --output tsv) \
 	./scripts/create-sp-for-rbac.sh
 
+	az role assignment create \
+		--role "Contributor" \
+		--assignee "$(shell az ad app list --display-name aro-dev-arm-helper2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(shell az account show --query id --output tsv)" \
+		--only-show-errors
+
 	APPLICATION_NAME=aro-dev-msi-mock2 \
 	KEY_VAULT_NAME=aro-hcp-dev-svc-kv \
 	CERTIFICATE_NAME=msiMockCert2 \
@@ -131,18 +173,60 @@ create-mock-identities:
 	SUBSCRIPTION_ID=$(shell az account show --query id --output tsv) \
 	./scripts/create-sp-for-rbac.sh
 
+	az role assignment create \
+		--role "Azure Red Hat OpenShift KMS Plugin - Dev" \
+		--assignee "$(shell az ad app list --display-name aro-dev-msi-mock2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(shell az account show --query id --output tsv)" \
+		--only-show-errors
+
 .PHONY: create-mock-identities
+
+grant-e2e-access:
+	az role assignment create \
+		--role "dev-first-party-mock" \
+		--assignee "$(shell az ad app list --display-name aro-dev-first-party2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(E2E_TESTING_SUBSCRIPTION_ID)" \
+		--only-show-errors
+
+	az role assignment create \
+		--role "Contributor" \
+		--assignee "$(shell az ad app list --display-name aro-dev-arm-helper2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(E2E_TESTING_SUBSCRIPTION_ID)" \
+		--only-show-errors
+
+	az role assignment create \
+		--role "Role Based Access Control Administrator" \
+		--assignee "$(shell az ad app list --display-name aro-dev-arm-helper2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/974ebd46-8ad3-41e3-afef-7ef25fd5c371" \
+		--only-show-errors
+
+	az role assignment create \
+		--role "dev-msi-mock" \
+		--assignee "$(shell az ad app list --display-name aro-dev-msi-mock2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(E2E_TESTING_SUBSCRIPTION_ID)" \
+		--only-show-errors
+
+	az role assignment create \
+		--role "Azure Red Hat OpenShift KMS Plugin - Dev" \
+		--assignee "$(shell az ad app list --display-name aro-dev-msi-mock2 --query '[*]'.appId -o tsv)" \
+		--scope "/subscriptions/$(E2E_TESTING_SUBSCRIPTION_ID)" \
+		--only-show-errors
+.PHONY: grant-e2e-access
+
+frontend-grant-ingress:
+	./scripts/frontend-grant-ingress-from-ip.sh "${SVC_RESOURCEGROUP}"
+.PHONY: frontend-grant-ingress
 
 #
 # Global
 #
 
 global:
-	../templatize.sh $(DEPLOY_ENV) -p global-pipeline.yaml -P run
+	make -C .. pipeline/Global DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: global
 
 global.what-if:
-	../templatize.sh $(DEPLOY_ENV) -p global-pipeline.yaml -P run -d
+	make -C .. pipeline/Global DRY_RUN=true DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: global.what-if
 
 #
@@ -150,7 +234,7 @@ global.what-if:
 #
 
 region:
-	../templatize.sh $(DEPLOY_ENV) -p region-pipeline.yaml -P run
+	make -C .. pipeline/Region DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: region
 
 region.clean:
@@ -161,7 +245,7 @@ region.clean:
 .PHONY: region.clean
 
 region.what-if:
-	../templatize.sh $(DEPLOY_ENV) -p region-pipeline.yaml -P run -d
+	make -C .. pipeline/Region DRY_RUN=true DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: region.what-if
 
 #
@@ -169,10 +253,10 @@ region.what-if:
 #
 
 svc:
-	../templatize.sh $(DEPLOY_ENV) -p svc-pipeline.yaml -P run
+	make -C .. pipeline/Service.Infra DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: svc
 
-svc.cs-pr-check-msi:
+svc.cs-pr-check-msi: configurations/cs-integ-msi.bicepparam
 	az deployment group create \
 		--name cs-integ-msi \
 		--resource-group $(SVC_RESOURCEGROUP) \
@@ -190,6 +274,10 @@ svc.aks.kubeconfig:
 	@az aks get-credentials --overwrite-existing --only-show-errors -n ${SVC_AKS_NAME} -g $(SVC_RESOURCEGROUP) -f "${SVC_KUBECONFIG_FILE}"
 	@kubelogin convert-kubeconfig -l azurecli --kubeconfig "${SVC_KUBECONFIG_FILE}"
 .PHONY: svc.aks.kubeconfig
+
+svc.aks.kubeconfig.pipeline:
+	make -C .. pipeline/Service.Kubeconfig DEPLOY_ENV=$(DEPLOY_ENV)
+.PHONY: svc.aks.kubeconfig.pipeline
 
 svc.aks.kubeconfigfile:
 	@echo ${SVC_KUBECONFIG_FILE}
@@ -218,13 +306,13 @@ svc.init: region svc svc.aks.admin-access svc.aks.kubeconfig svc.dev.permissions
 .PHONY: svc.init
 
 svc.what-if:
-	../templatize.sh $(DEPLOY_ENV) -p svc-pipeline.yaml -P run -d
+	make -C .. pipeline/Service.Infra DRY_RUN=true DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: svc.what-if
 
-svc.dev-role-assignments:
+svc.dev-role-assignments: configurations/dev-role-assignments.bicepparam
 	az deployment group create \
 		--name ${ROLE_ASSIGNMENTS_DEPLOYMENT_NAME} \
-		--resource-group "${SVC_RESOURCEGROUP}" \
+		--resource-group "${REGIONAL_RESOURCEGROUP}" \
 		--template-file templates/dev-roleassignments.bicep \
 		--parameters configurations/dev-role-assignments.bicepparam \
 		--parameters principalID=${PRINCIPAL_ID}
@@ -245,7 +333,7 @@ svc.clean: svc.clean-nsp-associations
 #
 
 mgmt:
-	../templatize.sh $(DEPLOY_ENV) -p mgmt-pipeline.yaml -P run
+	make -C .. pipeline/Management.Infra DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: mgmt
 
 mgmt.aks.admin-access:
@@ -257,6 +345,10 @@ mgmt.aks.kubeconfig:
 	@kubelogin convert-kubeconfig -l azurecli --kubeconfig "${MGMT_KUBECONFIG_FILE}"
 .PHONY: mgmt.aks.kubeconfig
 
+mgmt.aks.kubeconfig.pipeline:
+	make -C .. pipeline/Management.Kubeconfig DEPLOY_ENV=$(DEPLOY_ENV)
+.PHONY: mgmt.aks.kubeconfig.pipeline
+
 mgmt.aks.kubeconfigfile:
 	@echo ${MGMT_KUBECONFIG_FILE}
 .PHONY: mgmt.aks.kubeconfigfile
@@ -265,7 +357,7 @@ mgmt.init: region mgmt mgmt.aks.admin-access mgmt.aks.kubeconfig mgmt.dev.permis
 .PHONY: mgmt.init
 
 mgmt.what-if:
-	../templatize.sh $(DEPLOY_ENV) -p mgmt-pipeline.yaml -P run -d
+	make -C .. pipeline/Management.Infra DRY_RUN=true DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: mgmt.what-if
 
 mgmt.clean-nsp-associations:
@@ -287,33 +379,43 @@ mgmt.kv.permission:
 mgmt.dev.permissions: mgmt.kv.permission
 .PHONY: mgmt.dev.permissions
 
-mgmt.solo.init: region mgmt.solo mgmt.aks.admin-access mgmt.aks.kubeconfig mgmt.dev.permissions
-
-mgmt.solo:
-	../templatize.sh $(DEPLOY_ENV) -p mgmt-solo-pipeline.yaml -P run
-.PHONY: mgmt.solo
-
 #
 # Monitoring
 #
+kusto: configurations/kusto.bicepparam
+	make -C .. pipeline/Log.Infra DEPLOY_ENV=$(DEPLOY_ENV) EXTRA_ARGS="--region eastus2"
+	az tag create --resource-id /subscriptions/$(DEV_TESTING_SUBSCRIPTION_ID)/resourceGroups/hcp-kusto-us --tags persist=true
+.PHONY: kusto
 
 monitoring:
-	../templatize.sh $(DEPLOY_ENV) -p monitoring-pipeline.yaml -P run
+	make -C .. pipeline/Monitoring DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: monitoring
 
 monitoring.what-if:
-	../templatize.sh $(DEPLOY_ENV) -p monitoring-pipeline.yaml -P run -d
+	make -C .. pipeline/Monitoring DRY_RUN=true DEPLOY_ENV=$(DEPLOY_ENV)
 .PHONY: monitoring.what-if
+
+# Release Information
+
+release-information: configurations/release-information.bicepparam
+	az deployment group create \
+		--name release-information \
+ 		--resource-group $(GLOBAL_RESOURCEGROUP) \
+		--subscription $(DEV_TESTING_SUBSCRIPTION_ID) \
+		--template-file templates/release-information.bicep \
+		$(PROMPT_TO_CONFIRM) \
+		--parameters configurations/release-information.bicepparam
+.PHONY: release-information
 
 # ACR DEV customizations
 
-acr: acr-svc-cfg acr-ocp-cfg
+acr: acr-svc-cfg
 .PHONY: acr
 
-acr.what-if: acr-svc-cfg.what-if acr-ocp-cfg.what-if
+acr.what-if: acr-svc-cfg.what-if
 .PHONY: acr.what-if
 
-acr-svc-cfg: # DEV only setup of caching rules in OCP ACR
+acr-svc-cfg: configurations/acr-svc.bicepparam # DEV only setup of caching rules in OCP ACR
 	az deployment group create \
 		--name ${GLOBAL_RG_DEPLOYMENT_NAME}-acr-svc \
 		--resource-group $(GLOBAL_RESOURCEGROUP) \
@@ -323,7 +425,7 @@ acr-svc-cfg: # DEV only setup of caching rules in OCP ACR
 			configurations/acr-svc.bicepparam
 .PHONY: acr-svc-cfg
 
-acr-svc-cfg.what-if:
+acr-svc-cfg.what-if: configurations/acr-svc.bicepparam
 	az deployment group what-if \
 		--name ${GLOBAL_RG_DEPLOYMENT_NAME}-acr-svc \
 		--resource-group $(GLOBAL_RESOURCEGROUP) \
@@ -332,24 +434,19 @@ acr-svc-cfg.what-if:
 			configurations/acr-svc.bicepparam
 .PHONY: acr-svc-cfg.what-if
 
-acr-ocp-cfg: # DEV only setup of caching rules in OCP ACR
-	az deployment group create \
-		--name ${GLOBAL_RG_DEPLOYMENT_NAME}-acr-ocp \
-		--resource-group $(GLOBAL_RESOURCEGROUP) \
-		--template-file templates/dev-acr.bicep \
-		$(PROMPT_TO_CONFIRM) \
-		--parameters \
-			configurations/acr-ocp.bicepparam
-.PHONY: acr-ocp-cfg
+#
+# Cosmos Helpers
+#
 
-acr-ocp-cfg.what-if:
-	az deployment group what-if \
-		--name ${GLOBAL_RG_DEPLOYMENT_NAME}-acr-ocp \
-		--resource-group $(GLOBAL_RESOURCEGROUP) \
-		--template-file templates/dev-acr.bicep \
-		--parameters \
-			configurations/acr-ocp.bicepparam
-.PHONY: acr-ocp-cfg.what-if
+cosmos.access:
+    # grants "Cosmos DB Built-in Data Contributor" role to current user
+	az cosmosdb sql role assignment create \
+    --resource-group $(REGIONAL_RESOURCEGROUP) \
+    --account-name $(RP_COSMOS_DB_NAME) \
+    --role-definition-id "00000000-0000-0000-0000-000000000002" \
+    --principal-id $(PRINCIPAL_ID) \
+    --scope "/"
+.PHONY: cosmos.access
 
 #
 # Postgres Authentication Helpers
@@ -400,7 +497,8 @@ operator-roles:
 		--name operator-roles \
 		--template-file templates/dev-operator-roles.bicep \
 		$(PROMPT_TO_CONFIRM) \
-		--parameters configurations/dev-operator-roles.bicepparam
+		--parameters configurations/dev-operator-roles.bicepparam \
+		--parameters e2eTestSubscription=$(E2E_TESTING_SUBSCRIPTION_ID)
 .PHONY: operator-roles
 
 operator-roles.what-if:
@@ -408,7 +506,8 @@ operator-roles.what-if:
 	    --location westus3 \
 		--name operator-roles \
 		--template-file templates/dev-operator-roles.bicep \
-		--parameters configurations/dev-operator-roles.bicepparam
+		--parameters configurations/dev-operator-roles.bicepparam \
+		--parameters e2eTestSubscription=$(E2E_TESTING_SUBSCRIPTION_ID)
 .PHONY: operator-roles.what-if
 
 #
@@ -435,21 +534,44 @@ local-cs-permissions: svc.dev.permissions mgmt.dev.permissions
 # Automation Account creation
 #
 automation-account:
-	az group create -g ${AUTOMATION_ACCOUNT_RG} -l eastus --tags persist=true && \
-	az deployment group create \
-		--name dev-automation-account \
-		--resource-group $(AUTOMATION_ACCOUNT_RG) \
-		--template-file templates/dev-automation-account.bicep \
-		$(PROMPT_TO_CONFIRM) \
-		--parameters \
-			configurations/dev-automation-account.bicepparam
+	@for env in $(AUTOMATION_ACCOUNT_ENVS); do \
+		$(MAKE) automation-account-$$env; \
+	done
 .PHONY: automation-account
 
 automation-account.what-if:
-	az deployment group what-if \
-		--name dev-automation-account \
-		--resource-group $(AUTOMATION_ACCOUNT_RG) \
-		--template-file templates/dev-automation-account.bicep \
-		--parameters \
-			configurations/dev-automation-account.bicepparam
+	@for env in $(AUTOMATION_ACCOUNT_ENVS); do \
+		$(MAKE) automation-account-$$env.what-if; \
+	done
 .PHONY: automation-account.what-if
+
+$(addprefix automation-account-,$(AUTOMATION_ACCOUNT_ENVS)):automation-account-%: configurations/automation-account.bicepparam
+	$(eval _aa_env = $(subst automation-account-,,$@))
+	$(eval _aa_resource_group = hcp-$(_aa_env)-automation-account)
+	$(eval _aa_subscription_id = $($(shell tr '[:lower:]' '[:upper:]' <<< $(_aa_env))_TESTING_SUBSCRIPTION_ID))
+	az group create \
+		--resource-group $(_aa_resource_group) --subscription $(_aa_subscription_id) \
+		--location eastus --tags persist=true && \
+	az deployment group create \
+		--name $(_aa_env)-automation-account \
+		--resource-group $(_aa_resource_group) \
+		--mode complete \
+		--subscription $(_aa_subscription_id) \
+		--template-file templates/automation-account.bicep \
+		$(PROMPT_TO_CONFIRM) \
+		--parameters configurations/automation-account.bicepparam \
+		--parameters environment=$(_aa_env)
+.PHONY: $(addprefix automation-account-,$(AUTOMATION_ACCOUNT_ENVS))
+
+$(addsuffix .what-if,$(addprefix automation-account-,$(AUTOMATION_ACCOUNT_ENVS))):automation-account-%.what-if: configurations/automation-account.bicepparam
+	$(eval _aa_env = $(subst .what-if,,$(subst automation-account-,,$@)))
+	$(eval _aa_resource_group = hcp-$(_aa_env)-automation-account)
+	$(eval _aa_subscription_id = $($(shell tr '[:lower:]' '[:upper:]' <<< $(_aa_env))_TESTING_SUBSCRIPTION_ID))
+	az deployment group what-if \
+		--name $(_aa_env)-automation-account \
+		--resource-group $(_aa_resource_group) \
+		--subscription $(_aa_subscription_id) \
+		--template-file templates/automation-account.bicep \
+		--parameters configurations/automation-account.bicepparam \
+		--parameters environment=$(_aa_env)
+.PHONY: $(addsuffix .what-if,$(addprefix automation-account-,$(AUTOMATION_ACCOUNT_ENVS)))

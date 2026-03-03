@@ -34,7 +34,7 @@ type DeploymentPreflight struct {
 // UnmarshalDeploymentPreflight unmarshals JSON-encoded data and returns
 // either a DeploymentPreflight instance or an appropriate CloudError with
 // a 200 OK HTTP status code.
-func UnmarshalDeploymentPreflight(data []byte) (*DeploymentPreflight, *CloudError) {
+func UnmarshalDeploymentPreflight(data []byte) (*DeploymentPreflight, error) {
 	deploymentPreflight := &DeploymentPreflight{}
 	err := json.Unmarshal(data, deploymentPreflight)
 	if err != nil {
@@ -48,10 +48,10 @@ func UnmarshalDeploymentPreflight(data []byte) (*DeploymentPreflight, *CloudErro
 
 // DeploymentPreflightResource represents a desired resource in a deployment preflight request.
 type DeploymentPreflightResource struct {
-	Name       string `json:"name"                 validate:"required"`
-	Type       string `json:"type"                 validate:"required"`
-	Location   string `json:"location"             validate:"required"`
-	APIVersion string `json:"apiVersion,omitempty" validate:"required,api_version"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Location   string `json:"location"`
+	APIVersion string `json:"apiVersion,omitempty"`
 
 	// Preserve other tracked resource fields as raw data.
 	Identity   json.RawMessage `json:"identity,omitempty"`

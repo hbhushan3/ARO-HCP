@@ -2,9 +2,16 @@ $schema: "pipeline.schema.v1"
 serviceGroup: Microsoft.Azure.ARO.HCP.RP.HypershiftOperator
 rolloutName: RP HypershiftOperator Rollout
 resourceGroups:
-- name: '{{ .global.rg }}'
-  subscription: '{{ .global.subscription }}'
+- name: global
+  resourceGroup: '{{ .global.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
+  - name: output
+    action: ARM
+    template: templates/output-global.bicep
+    parameters: ./../dev-infrastructure/configurations/output-global.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
   - name: mirror-image
     action: ImageMirror
     targetACR:
@@ -20,36 +27,66 @@ resourceGroups:
     pullSecretName:
       configRef: imageSync.ondemandSync.pullSecretName
     shellIdentity:
-      configRef: aroDevopsMsiId
-- name: '{{ .mgmt.rg  }}'
-  subscription: '{{ .mgmt.subscription  }}'
+      input:
+        resourceGroup: global
+        step: output
+        name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "unknown_storage_failure"
+      - "unexpected EOF"
+      - "unauthorized: authentication required"
+      maximumRetryCount: 5
+      durationBetweenRetries: 1m
+- name: kusto
+  resourceGroup: '{{ .kusto.rg }}'
+  subscription: '{{ .global.subscription.key }}'
   steps:
+  - name: kusto-lookup
+    action: ARM
+    template: ../dev-infrastructure/templates/kusto-lookup.bicep
+    parameters: ../dev-infrastructure/configurations/kusto-lookup.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
+- name: management
+  resourceGroup: '{{ .mgmt.rg }}'
+  subscription: '{{ .mgmt.subscription.key }}'
+  steps:
+  - name: output
+    action: ARM
+    template: ./../dev-infrastructure/templates/hypershift-lookup.bicep
+    parameters: ./../dev-infrastructure/configurations/hypershift-lookup.tmpl.bicepparam
+    deploymentLevel: ResourceGroup
+    outputOnly: true
   - name: deploy
-    aksCluster: '{{ .mgmt.aks.name  }}'
-    action: Shell
-    command: make deploy
-    dryRun:
-      variables:
-      - name: DRY_RUN
-        value: "true"
+    aksCluster: '{{ .mgmt.aks.name }}'
+    action: Helm
+    releaseName: 'hypershift'
+    releaseNamespace: '{{ .hypershift.namespace }}'
+    chartDir: ./deploy
+    valuesFile: ./values.yaml
+    kustoEndpoint:
+      resourceGroup: kusto
+      step: kusto-lookup
+      name: kustoUri
+    kustoDatabase: '{{ .kusto.serviceLogsDatabase }}'
+    kustoTable: 'containerLogs'
+    inputVariables:
+      csiSecretStoreClientId:
+        resourceGroup: management
+        step: output
+        name: csiSecretStoreClientId
     dependsOn:
-    - mirror-image
-    variables:
-    - name: ARO_HCP_SVC_ACR
-      configRef: acr.svc.name
-    - name: ARO_HCP_OCP_ACR
-      configRef: acr.ocp.name
-    - name: HO_IMAGE_DIGEST
-      configRef: hypershift.image.digest
-    - name: HO_IMAGE_REPOSITORY
-      configRef: hypershift.image.repository
-    - name: RESOURCEGROUP
-      configRef: mgmt.rg
-    - name: AKS_NAME
-      configRef: mgmt.aks.name
-    - name: HYPERSHIFT_NAMESPACE
-      configRef: hypershift.namespace
-    - name: HO_ADDITIONAL_INSTALL_ARG
-      configRef: hypershift.additionalInstallArg
-    shellIdentity:
-      configRef: aroDevopsMsiId
+    - resourceGroup: global
+      step: mirror-image
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "500 Internal Server Error"
+      - "Internal error occurred"
+      - "context deadline exceeded"
+      maximumRetryCount: 3
+      durationBetweenRetries: 1m

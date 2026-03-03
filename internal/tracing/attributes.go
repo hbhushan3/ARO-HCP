@@ -15,10 +15,14 @@
 package tracing
 
 import (
-	arohcpv1alpha1 "github.com/openshift-online/ocm-sdk-go/arohcp/v1alpha1"
+	"time"
+
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 	"go.opentelemetry.io/otel/trace"
+
+	arohcpv1alpha1 "github.com/openshift-online/ocm-sdk-go/arohcp/v1alpha1"
+	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
 )
 
 // Correlation data and generic attributes.
@@ -112,6 +116,28 @@ const (
 	// NodePoolStateKey is the span's attribute Key reporting the internal cluster state.
 	// The key needs to be kept in sync with the key used by the Clusters Service.
 	NodePoolStateKey = attribute.Key("cs.nodepool.state")
+
+	// ExternalAuthIDKey is the span's attribute Key reporting the internal external auth identifier.
+	// The key needs to be kept in sync with the key used by the Clusters Service.
+	ExternalAuthIDKey = attribute.Key("cs.externalauth.id")
+
+	// ExternalAuthStateKey is the span's attribute Key reporting the internal cluster state.
+	// The key needs to be kept in sync with the key used by the Clusters Service.
+	ExternalAuthStateKey = attribute.Key("cs.externalauth.state")
+
+	// BreakGlassCredentialIDKey is the attribute key for the break-glass credential ID.
+	BreakGlassCredentialIDKey attribute.Key = "cs.break_glass_credential.id"
+
+	// BreakGlassCredentialStatus is the attribute key for the break-glass credential status.
+	BreakGlassCredentialStatusKey attribute.Key = "cs.break_glass_credential.status"
+
+	// BreakGlassCredentialRevocationTimestampKey is the attribute key for the
+	// break-glass credential's revocation timetstamp .
+	BreakGlassCredentialRevocationTimestampKey attribute.Key = "cs.break_glass_credential.revocation_time"
+
+	// BreakGlassCredentialExpirationTimestampKey is the attribute key for the
+	// break-glass credential's expiration timetstamp .
+	BreakGlassCredentialExpirationTimestampKey attribute.Key = "cs.break_glass_credential.expiration_time"
 )
 
 // SetClusterAttributes sets attributes on the span to identify the cluster.
@@ -143,6 +169,35 @@ func SetNodePoolAttributes(span trace.Span, nodePool *arohcpv1alpha1.NodePool) {
 func SetNodePoolStatusAttributes(span trace.Span, nodePoolStatus *arohcpv1alpha1.NodePoolStatus) {
 	addAttributeIfPresent(span, NodePoolIDKey, nodePoolStatus.GetID)
 	addAttributeIfPresent(span, NodePoolStateKey, nodePoolStatus.State().GetNodePoolStateValue)
+}
+
+// SetExternalAuthAttributes sets attributes on the span to identify the external auth.
+func SetExternalAuthAttributes(span trace.Span, externalAuth *arohcpv1alpha1.ExternalAuth) {
+	addAttributeIfPresent(span, ExternalAuthIDKey, externalAuth.GetID)
+	// addAttributeIfPresent(span, ExternalAuthStateKey, externalAuth.Status().State().)
+}
+
+// SetBreakGlassCredentialAttributes sets attributes on the span to identify the break-glass credential
+func SetBreakGlassCredentialAttributes(span trace.Span, credential *cmv1.BreakGlassCredential) {
+	addAttributeIfPresent(span, BreakGlassCredentialIDKey, credential.GetID)
+	addAttributeIfPresent(span, BreakGlassCredentialStatusKey, func() (string, bool) {
+		v, present := credential.GetStatus()
+		return string(v), present
+	})
+	addAttributeIfPresent(span, BreakGlassCredentialExpirationTimestampKey, func() (string, bool) {
+		ts, present := credential.GetExpirationTimestamp()
+		if !present {
+			return "", false
+		}
+		return ts.Format(time.RFC3339), true
+	})
+	addAttributeIfPresent(span, BreakGlassCredentialRevocationTimestampKey, func() (string, bool) {
+		ts, present := credential.GetRevocationTimestamp()
+		if !present {
+			return "", false
+		}
+		return ts.Format(time.RFC3339), true
+	})
 }
 
 func addAttributeIfPresent(span trace.Span, key attribute.Key, getter func() (string, bool)) {

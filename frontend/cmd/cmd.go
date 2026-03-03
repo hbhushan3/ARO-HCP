@@ -18,33 +18,41 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/tracing/azotel"
-	sdk "github.com/openshift-online/ocm-sdk-go"
+	"github.com/go-logr/logr"
+	"github.com/microsoft/go-otel-audit/audit/base"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	semconv "go.opentelemetry.io/otel/semconv/v1.27.0"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/tracing/azotel"
+
+	sdk "github.com/openshift-online/ocm-sdk-go"
+
 	"github.com/Azure/ARO-HCP/frontend/pkg/frontend"
-	"github.com/Azure/ARO-HCP/frontend/pkg/util"
 	"github.com/Azure/ARO-HCP/internal/api/arm"
+	"github.com/Azure/ARO-HCP/internal/audit"
 	"github.com/Azure/ARO-HCP/internal/database"
 	"github.com/Azure/ARO-HCP/internal/ocm"
+	"github.com/Azure/ARO-HCP/internal/signal"
 	"github.com/Azure/ARO-HCP/internal/tracing"
+	"github.com/Azure/ARO-HCP/internal/utils"
 	"github.com/Azure/ARO-HCP/internal/version"
 )
 
 type FrontendOpts struct {
+	auditLogQueueSize  int
+	auditConnectSocket bool
+
 	clustersServiceURL            string
 	clusterServiceProvisionShard  string
 	clusterServiceNoopProvision   bool
@@ -79,6 +87,9 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	rootCmd.Flags().IntVar(&opts.auditLogQueueSize, "audit-log-queue-size", 2048, "Log Queue size for audit logging client")
+	rootCmd.Flags().BoolVar(&opts.auditConnectSocket, "audit-connect-socket", os.Getenv("AUDIT_CONNECT_SOCKET") == "true", "Connect to mdsd audit socket instead")
+
 	rootCmd.Flags().StringVar(&opts.cosmosName, "cosmos-name", os.Getenv("DB_NAME"), "Cosmos database name")
 	rootCmd.Flags().StringVar(&opts.cosmosURL, "cosmos-url", os.Getenv("DB_URL"), "Cosmos database URL")
 	rootCmd.Flags().StringVar(&opts.location, "location", os.Getenv("LOCATION"), "Azure location")
@@ -96,18 +107,18 @@ func NewRootCmd() *cobra.Command {
 	return rootCmd
 }
 
-type policyFunc func(*policy.Request) (*http.Response, error)
+type PolicyFunc func(*policy.Request) (*http.Response, error)
 
-func (pf policyFunc) Do(req *policy.Request) (*http.Response, error) {
+func (pf PolicyFunc) Do(req *policy.Request) (*http.Response, error) {
 	return pf(req)
 }
 
-// Verify that policyFunc implements the policy.Policy interface.
-var _ policy.Policy = policyFunc(nil)
+// Verify that PolicyFunc implements the policy.Policy interface.
+var _ policy.Policy = PolicyFunc(nil)
 
-// correlationIDPolicy adds the ARM correlation request ID to the request's
+// CorrelationIDPolicy adds the ARM correlation request ID to the request's
 // HTTP headers if the ID is found in the context.
-func correlationIDPolicy(req *policy.Request) (*http.Response, error) {
+func CorrelationIDPolicy(req *policy.Request) (*http.Response, error) {
 	cd, err := frontend.CorrelationDataFromContext(req.Raw().Context())
 	// The incoming request may not contain a correlation request ID (e.g.
 	// requests to /healthz).
@@ -119,10 +130,37 @@ func correlationIDPolicy(req *policy.Request) (*http.Response, error) {
 }
 
 func (opts *FrontendOpts) Run() error {
-	ctx := context.Background()
+	ctx := signal.SetupSignalContext()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(fmt.Errorf("function returned"))
 
-	logger := util.DefaultLogger()
-	logger.Info(fmt.Sprintf("%s (%s) started", frontend.ProgramName, version.CommitSHA))
+	logger := utils.DefaultLogger()
+
+	if len(opts.location) == 0 {
+		return errors.New("location is required")
+	}
+
+	logger.Info(fmt.Sprintf(
+		"%s (%s) started in %s",
+		frontend.ProgramName,
+		version.CommitSHA,
+		opts.location))
+
+	// Create an slog logger for external dependencies that require it
+	slogLogger := slog.New(logr.ToSlogHandler(logger))
+	auditClient, err := audit.NewOtelAuditClient(
+		audit.CreateConn(opts.auditConnectSocket),
+		base.WithLogger(slogLogger),
+		base.WithSettings(base.Settings{
+			QueueSize: opts.auditLogQueueSize,
+		}))
+	if err != nil {
+		return fmt.Errorf("could not initialize Otel Audit Client: %w", err)
+	}
+
+	if opts.auditConnectSocket {
+		logger.Info("audit logging to default_fluent.socket")
+	}
 
 	// Initialize the global OpenTelemetry tracer.
 	otelShutdown, err := tracing.ConfigureOpenTelemetryTracer(
@@ -143,7 +181,7 @@ func (opts *FrontendOpts) Run() error {
 		azcore.ClientOptions{
 			// FIXME Cloud should be determined by other means.
 			Cloud:           cloud.AzurePublic,
-			PerCallPolicies: []policy.Policy{policyFunc(correlationIDPolicy)},
+			PerCallPolicies: []policy.Policy{PolicyFunc(CorrelationIDPolicy)},
 			TracingProvider: azotel.NewTracingProvider(otel.GetTracerProvider(), nil),
 		},
 	)
@@ -183,34 +221,25 @@ func (opts *FrontendOpts) Run() error {
 	}
 
 	csClient := ocm.NewClusterServiceClientWithTracing(
-		ocm.NewClusterServiceClient(
-			conn,
-			opts.clusterServiceProvisionShard,
-			opts.clusterServiceNoopDeprovision,
-			opts.clusterServiceNoopDeprovision,
-		),
-		util.TracerName,
+		ocm.NewClusterServiceClient(conn),
+		utils.TracerName,
 	)
 
-	if len(opts.location) == 0 {
-		return errors.New("location is required")
-	}
-	logger.Info(fmt.Sprintf("Application running in %s", opts.location))
+	f := frontend.NewFrontend(logger, listener, metricsListener, prometheus.DefaultRegisterer, dbClient, csClient, auditClient, opts.location, opts.clusterServiceProvisionShard, opts.clusterServiceNoopProvision, opts.clusterServiceNoopDeprovision)
 
-	f := frontend.NewFrontend(logger, listener, metricsListener, prometheus.DefaultRegisterer, dbClient, opts.location, csClient)
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- f.Run(ctx)
+		cancel(fmt.Errorf("frontend exited"))
+	}()
 
-	stop := make(chan struct{})
-	signalChannel := make(chan os.Signal, 1)
-	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
-	go f.Run(ctx, stop)
+	<-ctx.Done()
+	logger.Info("context closed")
 
-	sig := <-signalChannel
-	logger.Info(fmt.Sprintf("caught %s signal", sig))
-	close(stop)
-
-	f.Join()
 	_ = otelShutdown(ctx)
 	logger.Info(fmt.Sprintf("%s (%s) stopped", frontend.ProgramName, version.CommitSHA))
 
-	return nil
+	logger.Info("waiting for run to finish")
+	runErr := <-runErrCh
+	return runErr
 }

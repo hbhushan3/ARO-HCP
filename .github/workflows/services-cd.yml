@@ -5,8 +5,8 @@ env:
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  #AZURE_AUTHORITY_HOST: https://login.microsoftonline.com/
   PRINCIPAL_ID: ${{ secrets.GHA_PRINCIPAL_ID }}
+  PERSIST: true
 on:
   workflow_call:
     inputs:
@@ -39,9 +39,12 @@ jobs:
       contents: 'read'
     runs-on: 'ubuntu-latest'
     steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         fetch-depth: 1
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: 'go.work'
     - name: "install azure-cli"
       uses: "Azure/ARO-HCP@main"
     - name: 'Az CLI login'
@@ -58,9 +61,9 @@ jobs:
         sudo mv oc /usr/local/bin/oc
         chmod +x /usr/local/bin/oc
     # Used to deploy Maestro Server, Frontend
-    - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+    - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       with:
-        version: 'v3.13.3'
+        version: 'v3.18.6'
     - uses: azure/use-kubelogin@76597ae0fcbaace21b05e13a2cbf8daee2c6e820 # v1.2
       with:
         kubelogin-version: 'v0.1.3'
@@ -74,10 +77,19 @@ jobs:
         make svc.aks.kubeconfig
     - name: 'Deploy Frontend'
       run: |
-        make frontend.deploy_pipeline
+        OVERRIDE_CONFIG_FILE="${RUNNER_TEMP}/frontend-$(uuidgen).yaml"
+        make -C frontend/ record-override OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}" DETECT_DIRTY_GIT_WORKTREE=0
+        make pipeline/RP.Frontend OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}"
+    - name: 'Deploy Admin API'
+      run: |
+        OVERRIDE_CONFIG_FILE="${RUNNER_TEMP}/admin-$(uuidgen).yaml"
+        make -C admin/ record-override OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}" DETECT_DIRTY_GIT_WORKTREE=0
+        make pipeline/AdminAPI OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}"
     - name: 'Deploy Backend'
       run: |
-        make backend.deploy_pipeline
+        OVERRIDE_CONFIG_FILE="${RUNNER_TEMP}/backend-$(uuidgen).yaml"
+        make -C backend/ record-override OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}" DETECT_DIRTY_GIT_WORKTREE=0
+        make pipeline/RP.Backend OVERRIDE_CONFIG_FILE="${OVERRIDE_CONFIG_FILE}"
     - name: 'Deploy Cluster Service'
       if: ${{ ! inputs.deploy_cs_pr_check_deps }}
       run: |
@@ -85,9 +97,9 @@ jobs:
     - name: 'Deploy Maestro'
       run: |
         make maestro.server.deploy_pipeline
-      # - name: 'Deploy Backplane API'
-      #  run: |
-      #     make backplane-api.deploy_pipeline
+    - name: 'Deploy Observability/Tracing'
+      run: |
+        make observability.tracing.deploy_pipeline
     - name: 'Deploy CS PR check environment dressup'
       if: inputs.deploy_cs_pr_check_deps
       run: |
@@ -98,9 +110,12 @@ jobs:
       contents: 'read'
     runs-on: 'ubuntu-latest'
     steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       with:
         fetch-depth: 1
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: 'go.work'
     - name: "install azure-cli"
       uses: "Azure/ARO-HCP@main"
     - name: 'Az CLI login'
@@ -116,9 +131,9 @@ jobs:
     - uses: oras-project/setup-oras@v1
       with:
         version: 1.2.3
-    - uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+    - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       with:
-        version: 'v3.13.3'
+        version: 'v3.18.6'
     # Prepare kubeconfig
     - name: 'Prepare kubeconfig'
       run: |
@@ -139,3 +154,9 @@ jobs:
     - name: 'Deploy Secret Sync Controller'
       run: |
         make secret-sync-controller.deploy_pipeline
+    - name: 'Deploy Observability/Tracing'
+      run: |
+        make observability.tracing.deploy_pipeline
+    - name: 'Deploy Route Monitor Operator'
+      run: |
+        make route-monitor-operator.deploy_pipeline

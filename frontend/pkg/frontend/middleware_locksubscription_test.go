@@ -22,11 +22,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
 	"go.uber.org/mock/gomock"
+
 	"k8s.io/utils/ptr"
 
-	"github.com/Azure/ARO-HCP/internal/mocks"
+	"github.com/Azure/azure-sdk-for-go/sdk/data/azcosmos"
+
+	"github.com/Azure/ARO-HCP/internal/database"
 )
 
 func TestMiddlewareLockSubscription(t *testing.T) {
@@ -43,15 +45,13 @@ func TestMiddlewareLockSubscription(t *testing.T) {
 
 	ctx := context.Background()
 	mockController := gomock.NewController(t)
-	mockDBClient := mocks.NewMockDBClient(mockController)
-	mockLockClient := mocks.NewMockLockClientInterface(mockController)
+	mockDBClient := database.NewMockDBClient(mockController)
+	mockLockClient := database.NewMockLockClientInterface(mockController)
 	mockLockClient.EXPECT().GetDefaultTimeToLive().Return(10 * time.Second)
 	lockResponse := &azcosmos.ItemResponse{}
 	mockLockClient.EXPECT().AcquireLock(gomock.Not(gomock.Nil()), "TheSubscriptionID", ptr.To(10*time.Second)).Return(lockResponse, nil)
 	mockLockClient.EXPECT().HoldLock(gomock.Not(gomock.Nil()), gomock.Not(gomock.Nil())).Return(lockCancelCtx, stopCalledFn)
 	mockDBClient.EXPECT().GetLockClient().Return(mockLockClient)
-
-	ctx = ContextWithDBClient(ctx, mockDBClient)
 
 	request := httptest.NewRequestWithContext(ctx, "PUT", "http://example.com", nil)
 	request.SetPathValue(PathSegmentSubscriptionID, "TheSubscriptionID")
@@ -64,7 +64,7 @@ func TestMiddlewareLockSubscription(t *testing.T) {
 			}
 		}()
 
-		MiddlewareLockSubscription(response, request, panicingHandler)
+		newMiddlewareLockSubscription(mockDBClient).handleRequest(response, request, panicingHandler)
 	}()
 
 	if !stopWasCalled {

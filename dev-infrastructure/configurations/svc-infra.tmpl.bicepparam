@@ -5,12 +5,11 @@ param serviceKeyVaultResourceGroup = '{{ .serviceKeyVault.rg }}'
 param serviceKeyVaultLocation = '{{ .serviceKeyVault.region }}'
 param serviceKeyVaultSoftDelete = {{ .serviceKeyVault.softDelete }}
 param serviceKeyVaultPrivate = {{ .serviceKeyVault.private }}
+param serviceKeyVaultTagName = '{{ .serviceKeyVault.tagKey }}'
+param serviceKeyVaultTagValue = '{{ .serviceKeyVault.tagValue }}'
 
 // MI for resource access during pipeline runs
-param aroDevopsMsiId = '{{ .aroDevopsMsiId }}'
+param globalMSIId = '__globalMSIId__'
 
 // SP for KV certificate issuer registration
 param kvCertOfficerPrincipalId = '{{ .kvCertOfficerPrincipalId }}'
-
-// Log Analytics Workspace ID will be passed from region pipeline if enabled in config
-param logAnalyticsWorkspaceId = '__logAnalyticsWorkspaceId__'

@@ -15,7 +15,7 @@ serviceGroup: Microsoft.Azure.ARO.HCP.Region     (1)
 rolloutName: Region Rollout                      (2)
 resourceGroups:                                  (3)
 - name: {{ .global.rg }}                         (4)
-  subscription: {{ .global.subscription }}       (5)
+  subscription: {{ .global.subscription.key }}   (5)
   aksCluster: {{ .global.aksCluster }}           (6)
   steps: []                                      (7)
 ```
@@ -89,19 +89,21 @@ Execute shell commands or scripts within the pipeline environment. Shell steps a
   - name: upgrade-istio
     action: Shell                                       (1)
     script: make deploy                                 (2)
-    variables:                                          (3)
-    - name: TARGET_VERSION                              (4)
-      configRef: svc.istio.targetVersion                (5)
+    workingDir: ./component                             (3)
+    variables:                                          (4)
+    - name: TARGET_VERSION                              (5)
+      configRef: svc.istio.targetVersion                (6)
     - name: RETRIES
-      value: 5                                          (6)
+      value: 5                                          (7)
 ```
 
 1. `action: Shell` marks the step as a shell step.
 2. `script`: The shell command to be executed. This can be a single command or a script file.
-3. `variables`: A list of environment variables that are set before executing the script.
-4. `variables.name`: The name of the environment variable.
-5. `variables.configRef`: The [configuration reference](configuration.md) to look up the value for the environment variable.
-6. `variables.value`: Alternatively static values can be provided for the environment variable.
+3. `workingDir`: The directory that the shell step will have access to at runtime, optional. Highly recommended. If left unset, the step will be able to access the entire repository, but will run in the working directory of the `pipeline.yaml` file. Such steps will always re-run in incremental mode.
+4. `variables`: A list of environment variables that are set before executing the script.
+5. `variables.name`: The name of the environment variable.
+6. `variables.configRef`: The [configuration reference](configuration.md) to look up the value for the environment variable.
+7. `variables.value`: Alternatively static values can be provided for the environment variable.
 
 Currently, the following list of tools can be used within shell scripts:
 
@@ -144,7 +146,7 @@ All steps share a common execution context:
 
 #### Azure session
 
-When executing step, an Azure session is provided for the defined subscription (`resourceGroups.subscription`) and resourcegroup (`resourceGroups.name`), allowing authenticated Azure operations. The identity used for this session is provided in the [configuration](configuration.md) as `aroDevopsMsiId`.
+When executing a shell step, an Azure session is provided for the defined subscription (`resourceGroups.subscription`) and resourcegroup (`resourceGroups.name`), allowing authenticated Azure operations. The identity used for this session is provided in the [configuration](configuration.md) as `global.globalMSIName` hosted in the `global.subscription` subscription. and `global.rg` Azure resourcegroup.
 
 > [!IMPORTANT]
 > Please note that this identity does not have access to all Azure resources in our subscriptions and resourcegroups by default. The necessary permissions need to be granted explicitly. You can observe this in various Bicep templates, where this identity is granted specific permissions, e.g. on Key Vaults or storage accounts.
@@ -156,6 +158,12 @@ The resourcegroup (`resourceGroups.name`) is pre-created before step execution s
 #### AKS cluster
 
 If an `resourceGroups.aksCluster` is specified, the `KUBECONFIG` environment variable is set and allows cluster admin interaction withe the AKS cluster. This is mostly relevant for `Shell` steps.
+
+#### Environment variables
+
+All the variables defined in the `variables` section of a step are set as environment variables before executing the step. This allows steps to access configuration values or other necessary parameters.
+
+In addition, an environment variable `zz_injected_EV2=1` is set when the step is executed within EV2. This environment variable is missing otherwise.
 
 ## Pipeline Deployment Scope
 
@@ -189,22 +197,22 @@ The pipeline format, with its resource group and subscription references and the
 
 Within the Red Hat development tenant for ARO HCP, we have two primary use cases for deployments.
 
-Developers and SREs deploy their personal development ARO HCP instances using Makefile targets, such as `make infra.all`. Behind the scene, this executes a series of pipelines using a custom pipeline runner that interprets the pipeline files and takes actions accordingly, adhering to the defined expectations described in the [Step execution context](#step-execution-context) section.
+Developers and SREs deploy their personal development ARO HCP instances using Makefile targets, such as `make entrypoint/Global` or `make pipeline/PKO`. Use your shell's tab-completion to view the available options for these targets. Behind the scenes, this executes the steps in a pipeline or under an entrypoint using a custom pipeline runner that interprets the pipeline files and takes actions accordingly, adhering to the defined expectations described in the [Step execution context](#step-execution-context) section.
 
 In addition, some shared ARO HCP instances are continuously reconciled on each change in the ARO-HCP repository using GitHub Actions. These actions leverage the same Makefile targets and the same pipeline executor as developers and SREs.
 
 The custom pipeline runner can be found in [tooling/templatize](tooling/templatize).
 
-To manually run a pipeline you can use the `templatize.sh` script, e.g. to deploy `my-pipeline.yaml` with the `pers` environment architetype in the `dev` cloud (which is basically `public` cloud - see [configuration documentation](configuration.md)), run
+To manually run a pipeline you can use the `make pipeline/` targets, e.g. to deploy `Microsoft.Azure.ARO.HCP.Maestro.Agent` with the `pers` environment architetype in the `dev` cloud (which is basically `public` cloud - see [configuration documentation](configuration.md)), run
 
 ```sh
-./templatize.sh pers -p my-pipeline.yaml -P run
+make pipeline/Maestro.Agent DEPLOY_ENV=pers
 ```
 
-The pipeline runner supports a dry-run mode that allows you to simulate the execution of a pipeline without actually deploying any resources. This is useful for verifying the correctness of the pipeline file and the expected behavior of the steps. Add the `-d` option to the `templatize.sh` command to enable dry-run mode:
+The pipeline runner supports a dry-run mode that allows you to simulate the execution of a pipeline without actually deploying any resources. This is useful for verifying the correctness of the pipeline file and the expected behavior of the steps. Add the `DRY_RUN=true` option to the `make` command to enable dry-run mode:
 
 ```sh
-./templatize.sh pers -p my-pipeline.yaml -P run -d
+make pipeline/Maestro.Agent DEPLOY_ENV=pers DRY_RUN=true
 ```
 
 > [!IMPORTANT]

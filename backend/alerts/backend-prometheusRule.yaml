@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-prometheus
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+    role: alert-rules
+  name: backend-monitoring-rules
+  namespace: monitoring
+spec:
+  groups:
+  - name: backend
+    rules:
+    - alert: BackendOperationErrorRate
+      expr: |
+        (sum by (cluster) (rate(backend_failed_operations_total[1h])))
+        /
+        (sum by (cluster) (rate(backend_operations_total[1h])))
+        > 0.05
+      for: 5m
+      labels:
+        severity: info
+      annotations:
+        description: 'The Backend operation error rate is above 5% for the last hour. Current value: {{ $value | humanizePercentage }}.'
+        runbook_url: 'TBD'
+        summary: 'High Error Rate on Backend Operations'

@@ -2,11 +2,13 @@ import "@typespec/rest";
 import "@typespec/http";
 import "@azure-tools/typespec-azure-core";
 import "@azure-tools/typespec-azure-resource-manager";
+import "@azure-tools/typespec-client-generator-core";
 
 namespace Microsoft.RedHatOpenShift;
 
 using TypeSpec.Rest;
 using Azure.ResourceManager;
+using Azure.ClientGenerator.Core;
 
 /** HcpOperatorIdentityRoles represents a location based representation of
  * the required platform workload identities and their required roles for a given
@@ -29,10 +31,12 @@ model HcpOperatorIdentityRoleSet
 model HcpOperatorIdentityRoleSetProperties {
   /** The role definitions required for the User-Assigned managed identities used
    * by Control Plane operators on a cluster. */
+  @OpenAPI.extension("x-ms-identifiers", #["name"])
   controlPlaneOperators: OperatorIdentityRoles[];
 
   /** The role definitions required for the User-Assigned managed identities used
    * by Data Plane operators on a cluster. */
+  @OpenAPI.extension("x-ms-identifiers", #["name"])
   dataPlaneOperators: OperatorIdentityRoles[];
 }
 
@@ -45,6 +49,7 @@ model OperatorIdentityRoles {
   required: OperatorIdentityRequired;
 
   /** The role definitions required to be assigned to the identity assumed by this operator */
+  @OpenAPI.extension("x-ms-identifiers", #["name"])
   roleDefinitions: RoleDefinition[];
 }
 
@@ -60,6 +65,7 @@ union OperatorIdentityRequired {
 }
 
 /** A single role definition required by a given operator */
+@clientName("RoleDefinitionInfo", "csharp")
 model RoleDefinition {
   /** The name of the required role definition */
   name: string;
@@ -72,7 +78,7 @@ scalar RoleDefinitionResourceId
   extends Azure.Core.armResourceIdentifier<[
     {
       type: "Microsoft.Authorization/roleDefinitions",
-      scopes: ["tenant"],
+      scopes: ["Tenant"],
     }
   ]>;
 

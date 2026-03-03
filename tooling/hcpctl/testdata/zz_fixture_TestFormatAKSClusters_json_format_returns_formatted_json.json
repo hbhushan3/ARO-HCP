@@ -1,0 +1,16 @@
+{
+  "kind": "ManagementClusters",
+  "total": 1,
+  "items": [
+    {
+      "name": "test-cluster",
+      "resourcegroup": "test-rg",
+      "subscriptionid": "sub-123",
+      "subscription": "",
+      "location": "eastus",
+      "resourceid": "/subscriptions/sub-123/resourceGroups/test-rg/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/cluster",
+      "state": "",
+      "tags": null
+    }
+  ]
+}

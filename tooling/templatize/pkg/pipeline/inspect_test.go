@@ -19,10 +19,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/types"
 )
 
 func TestInspectVars(t *testing.T) {
@@ -49,7 +51,7 @@ func TestInspectVars(t *testing.T) {
 				}},
 			},
 			options: &InspectOptions{
-				Configuration: config.Configuration{
+				Configuration: configtypes.Configuration{
 					"foo": "bar",
 				},
 				Format: "shell",
@@ -72,7 +74,7 @@ func TestInspectVars(t *testing.T) {
 				}},
 			},
 			options: &InspectOptions{
-				Configuration: config.Configuration{
+				Configuration: configtypes.Configuration{
 					"foo": "bar",
 				},
 				Format: "makefile",
@@ -111,7 +113,7 @@ func TestInspectVars(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := new(bytes.Buffer)
 			tc.options.OutputFile = buf
-			err := inspectVars(context.Background(), &types.Pipeline{}, tc.caseStep, tc.options)
+			err := inspectVars(map[string]string{})(logr.NewContext(t.Context(), testr.New(t)), &types.Pipeline{}, "", tc.caseStep, tc.options)
 			if tc.err == "" {
 				assert.NoError(t, err)
 				assert.Equal(t, buf.String(), tc.expected)
@@ -138,14 +140,14 @@ func TestInspect(t *testing.T) {
 		},
 	}
 
-	err := Inspect(&p, context.Background(), &InspectOptions{
+	err := Inspect(&p, logr.NewContext(t.Context(), testr.New(t)), &InspectOptions{
 		Scope:         "scope",
 		Format:        "format",
 		Step:          "step1",
 		Region:        "",
-		Configuration: config.Configuration{},
+		Configuration: configtypes.Configuration{},
 		ScopeFunctions: map[string]StepInspectScope{
-			"scope": func(ctx context.Context, p *types.Pipeline, s types.Step, o *InspectOptions) error {
+			"scope": func(ctx context.Context, p *types.Pipeline, serviceGroup string, s types.Step, o *InspectOptions) error {
 				assert.Equal(t, s.StepName(), "step1")
 				return nil
 			},
@@ -170,12 +172,12 @@ func TestInspectWrongScope(t *testing.T) {
 		},
 	}
 
-	err := Inspect(&p, context.Background(), &InspectOptions{
+	err := Inspect(&p, logr.NewContext(t.Context(), testr.New(t)), &InspectOptions{
 		Scope:         "foo",
 		Format:        "format",
 		Step:          "step1",
 		Region:        "",
-		Configuration: config.Configuration{},
+		Configuration: configtypes.Configuration{},
 		OutputFile:    new(bytes.Buffer),
 	})
 	assert.Error(t, err, "unknown inspect scope \"foo\"")

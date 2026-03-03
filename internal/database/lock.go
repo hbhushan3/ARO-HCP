@@ -14,6 +14,8 @@
 
 package database
 
+//go:generate $MOCKGEN -typed -source=lock.go -destination=mock_lock.go -package database LockClientInterface
+
 import (
 	"context"
 	"encoding/json"
@@ -55,7 +57,7 @@ type LockClient struct {
 // lockDocument implements a global distributed lock.
 // Its contents should be opaque outside of LockClient.
 type lockDocument struct {
-	baseDocument
+	BaseDocument
 	Owner string `json:"owner,omitempty"`
 	TTL   int32  `json:"ttl,omitempty"`
 }
@@ -141,7 +143,7 @@ func (c *LockClient) AcquireLock(ctx context.Context, id string, timeout *time.D
 // is already taken, it returns a nil azcosmos.ItemResponse and no error.
 func (c *LockClient) TryAcquireLock(ctx context.Context, id string) (*azcosmos.ItemResponse, error) {
 	doc := &lockDocument{
-		baseDocument: baseDocument{ID: id},
+		BaseDocument: BaseDocument{ID: id},
 		Owner:        c.name,
 		TTL:          c.defaultTimeToLive,
 	}

@@ -1,0 +1,15 @@
+[
+  "",
+  "",
+  "Attempts to create a nodepool for a non-existent HCPOpenshiftCluster",
+  "Attempts to put HCPOpenshiftCluster with non-existent Resource Group and cluster resource as nil",
+  "Confirms cluster has been created successfully",
+  "Fails to get a nonexistent cluster with a Not Found error",
+  "Get each nodepool from HCPOpenShiftCluster",
+  "Successfully lists clusters filtered by resource group name",
+  "Successfully lists clusters filtered by subscription ID",
+  "creates a cluster and fails to update its name with a PATCH request",
+  "creates and deletes vm type NC4asT4v3 in a single cluster",
+  "should confirm the HCP cluster is deleted (not found)",
+  "should create an HCP cluster and validate TLS certificates"
+]

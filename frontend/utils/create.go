@@ -20,6 +20,10 @@ import (
 	"fmt"
 	"os"
 
+	"k8s.io/utils/ptr"
+
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+
 	"github.com/Azure/ARO-HCP/internal/api"
 	"github.com/Azure/ARO-HCP/internal/api/arm"
 )
@@ -59,11 +63,11 @@ func main() {
 // CreateJSONFile creates a base cluster JSON file for use with testing frontend to create clusters
 func CreateJSONFile() error {
 	cluster := api.HCPOpenShiftCluster{
-		Properties: api.HCPOpenShiftClusterProperties{
+		CustomerProperties: api.HCPOpenShiftClusterCustomerProperties{
 			Version: api.VersionProfile{
 				ChannelGroup: "stable",
 			},
-			DNS: api.DNSProfile{},
+			DNS: api.CustomerDNSProfile{},
 			Network: api.NetworkProfile{
 				NetworkType: api.NetworkTypeOVNKubernetes,
 				PodCIDR:     "10.128.0.0/14",
@@ -71,16 +75,20 @@ func CreateJSONFile() error {
 				MachineCIDR: "10.0.0.0/16",
 				HostPrefix:  23,
 			},
-			Console: api.ConsoleProfile{},
-			API: api.APIProfile{
+			API: api.CustomerAPIProfile{
 				Visibility: api.Visibility("Public"),
 			},
-			Platform: api.PlatformProfile{
+			Platform: api.CustomerPlatformProfile{
 				ManagedResourceGroup:   "dev-test-mrg",
-				NetworkSecurityGroupID: "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/networkSecurityGroups/xyz",
-				SubnetID:               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/virtualNetworks/xyz/subnets/xyz",
+				NetworkSecurityGroupID: api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/networkSecurityGroups/xyz")),
+				SubnetID:               api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/virtualNetworks/xyz/subnets/xyz")),
 				OutboundType:           api.OutboundType("LoadBalancer"),
-				IssuerURL:              "",
+			},
+		},
+		ServiceProviderProperties: api.HCPOpenShiftClusterServiceProviderProperties{
+			Console: api.ServiceProviderConsoleProfile{},
+			Platform: api.ServiceProviderPlatformProfile{
+				IssuerURL: "",
 			},
 		},
 	}
@@ -106,14 +114,16 @@ func CreateNodePool() error {
 				ChannelGroup: "stable",
 			},
 			Platform: api.NodePoolPlatformProfile{
-				SubnetID:    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/virtualNetworks/xyz/subnets/xyz",
-				DiskSizeGiB: 30,
+				SubnetID: api.Must(azcorearm.ParseResourceID("/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/dev-test-rg/providers/Microsoft.Network/virtualNetworks/xyz/subnets/xyz")),
+				OSDisk: api.OSDiskProfile{
+					SizeGiB:                ptr.To[int32](64),
+					DiskStorageAccountType: "StandardSSD_LRS",
+				},
 
 				// VMSize should match configs/cloud-resources/instance-types.yaml
 				// and configs/cloud-resource-constraints/instance-type-constraints.yaml
 				// in CS config files.
-				VMSize:                 "Standard_D8s_v3",
-				DiskStorageAccountType: "StandardSSD_LRS",
+				VMSize: "Standard_D8s_v3",
 			},
 			Replicas: 2,
 		},

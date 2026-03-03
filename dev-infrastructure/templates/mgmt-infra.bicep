@@ -1,9 +1,6 @@
 @description('Azure Region Location')
 param location string = resourceGroup().location
 
-@description('Set to true to prevent resources from being pruned after 48 hours')
-param persist bool = false
-
 @description('The name of the CX KeyVault')
 param cxKeyVaultName string
 
@@ -12,6 +9,10 @@ param cxKeyVaultPrivate bool
 
 @description('Defines if the CX KeyVault has soft delete enabled')
 param cxKeyVaultSoftDelete bool
+
+// CX KV tagging
+param cxKeyVaultTagName string
+param cxKeyVaultTagValue string
 
 @description('The name of the MSI KeyVault')
 param msiKeyVaultName string
@@ -22,6 +23,10 @@ param msiKeyVaultPrivate bool
 @description('Defines if the MSI KeyVault has soft delete enabled')
 param msiKeyVaultSoftDelete bool
 
+// MSI KV tagging
+param msiKeyVaultTagName string
+param msiKeyVaultTagValue string
+
 @description('The name of the MGMT KeyVault')
 param mgmtKeyVaultName string
 
@@ -31,27 +36,23 @@ param mgmtKeyVaultPrivate bool
 @description('Defines if the MGMT KeyVault has soft delete enabled')
 param mgmtKeyVaultSoftDelete bool
 
-@description('Cluster user assigned identity resource id, used to grant KeyVault access')
-param clusterServiceMIResourceId string
+// MGMT KV tagging
+param mgmtKeyVaultTagName string
+param mgmtKeyVaultTagValue string
 
 @description('KV certificate officer principal ID')
 param kvCertOfficerPrincipalId string
 
 @description('MSI that will be used during pipeline runs')
-param aroDevopsMsiId string
+param globalMSIId string
 
-// Log Analytics Workspace ID will be passed from region pipeline if enabled in config
-param logAnalyticsWorkspaceId string = ''
-
-resource resourcegroupTags 'Microsoft.Resources/tags@2024-03-01' = {
-  name: 'default'
-  scope: resourceGroup()
-  properties: {
-    tags: {
-      persist: toLower(string(persist))
-    }
-  }
-}
+// Storage Account for HCP Backups
+@minLength(3)
+// @maxLength(24) Fails on EV2 pipelines, probably because the EV2 placeholder is longer than 24.
+param hcpBackupsStorageAccountName string
+param hcpBackupsStorageAccountContainerName string = 'backups'
+param hcpBackupsStorageAccountZoneRedundantMode string = 'Auto'
+param hcpBackupsStorageAccountPublic bool = true
 
 // Reader role
 // https://www.azadvertizer.net/azrolesadvertizer/acdd72a7-3385-48ef-bd42-f606fba81ae7.html
@@ -63,9 +64,9 @@ var readerRoleId = subscriptionResourceId(
 // service deployments running as the aroDevopsMsi need to lookup metadata about all kinds
 // of resources, e.g. AKS metadata, database metadata, MI metadata, etc.
 resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, aroDevopsMsiId, readerRoleId)
+  name: guid(resourceGroup().id, globalMSIId, readerRoleId)
   properties: {
-    principalId: reference(aroDevopsMsiId, '2023-01-31').principalId
+    principalId: reference(globalMSIId, '2023-01-31').principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: readerRoleId
   }
@@ -76,14 +77,14 @@ resource aroDevopsMSIReader 'Microsoft.Authorization/roleAssignments@2022-04-01'
 //
 
 module cxKeyVault '../modules/keyvault/keyvault.bicep' = {
-  name: '${deployment().name}-cx-kv'
+  name: 'cx-kv-${uniqueString(cxKeyVaultName)}'
   params: {
     location: location
     keyVaultName: cxKeyVaultName
     private: cxKeyVaultPrivate
     enableSoftDelete: cxKeyVaultSoftDelete
-    purpose: 'cx'
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    tagKey: cxKeyVaultTagName
+    tagValue: cxKeyVaultTagValue
   }
 }
 
@@ -96,7 +97,7 @@ module cxKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = [
     params: {
       keyVaultName: cxKeyVaultName
       roleName: role
-      managedIdentityPrincipalId: kvCertOfficerPrincipalId
+      managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
     }
     dependsOn: [
       cxKeyVault
@@ -107,28 +108,28 @@ module cxKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = [
 output cxKeyVaultUrl string = cxKeyVault.outputs.kvUrl
 
 module msiKeyVault '../modules/keyvault/keyvault.bicep' = {
-  name: '${deployment().name}-msi-kv'
+  name: 'msi-kv-${uniqueString(msiKeyVaultName)}'
   params: {
     location: location
     keyVaultName: msiKeyVaultName
     private: msiKeyVaultPrivate
     enableSoftDelete: msiKeyVaultSoftDelete
-    purpose: 'msi'
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    tagKey: msiKeyVaultTagName
+    tagValue: msiKeyVaultTagValue
   }
 }
 
 output msiKeyVaultUrl string = msiKeyVault.outputs.kvUrl
 
 module mgmtKeyVault '../modules/keyvault/keyvault.bicep' = {
-  name: '${deployment().name}-mgmt-kv'
+  name: 'mgmt-kv-${uniqueString(mgmtKeyVaultName)}'
   params: {
     location: location
     keyVaultName: mgmtKeyVaultName
     private: mgmtKeyVaultPrivate
     enableSoftDelete: mgmtKeyVaultSoftDelete
-    purpose: 'mgmt'
-    logAnalyticsWorkspaceId: logAnalyticsWorkspaceId
+    tagKey: mgmtKeyVaultTagName
+    tagValue: mgmtKeyVaultTagValue
   }
 }
 
@@ -141,7 +142,7 @@ module mgmtKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = [
     params: {
       keyVaultName: mgmtKeyVaultName
       roleName: role
-      managedIdentityPrincipalId: kvCertOfficerPrincipalId
+      managedIdentityPrincipalIds: [kvCertOfficerPrincipalId]
     }
     dependsOn: [
       mgmtKeyVault
@@ -152,20 +153,18 @@ module mgmtKeyVaultAccess '../modules/keyvault/keyvault-secret-access.bicep' = [
 output mgmtKeyVaultUrl string = mgmtKeyVault.outputs.kvUrl
 
 //
-//   C L U S T E R   S E R V I C E   K V   A C C E S S
+// H C P   B A C K U P S   S T O R A G E
 //
 
-import * as res from '../modules/resource.bicep'
-
-module csKeyVaultAccess '../modules/cluster-service-mc-kv-access.bicep' = if (res.isMsiResourceId(clusterServiceMIResourceId)) {
-  name: 'cs-msi-kv-access'
+module hcpBackupsStorage '../modules/hcp-backups/storage.bicep' = {
+  name: 'hcp-backups-storage'
   params: {
-    clusterServiceMIResourceId: clusterServiceMIResourceId
-    cxKeyVaultName: cxKeyVaultName
-    msiKeyVaultName: msiKeyVaultName
+    storageAccountName: hcpBackupsStorageAccountName
+    location: location
+    containerName: hcpBackupsStorageAccountContainerName
+    zoneRedundantMode: hcpBackupsStorageAccountZoneRedundantMode
+    public: hcpBackupsStorageAccountPublic
   }
-  dependsOn: [
-    cxKeyVault
-    msiKeyVault
-  ]
 }
+
+output hcpBackupsStorageAccountId string = hcpBackupsStorage.outputs.storageAccountId

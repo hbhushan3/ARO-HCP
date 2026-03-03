@@ -21,17 +21,18 @@ import (
 	"os"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
-	armauthorization "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v3"
 	"github.com/google/uuid"
 	auth "github.com/microsoft/kiota-authentication-azure-go"
 	msgraphsdk "github.com/microsoftgraph/msgraph-sdk-go"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/azauth"
+	"github.com/Azure/ARO-Tools/tools/cmdutils"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization/v3"
 )
 
 const (
@@ -49,6 +50,11 @@ func EnsureClusterAdmin(ctx context.Context, kubeconfigPath, subscriptionID, res
 			Timeout:        time.Duration(2 * time.Minute),
 			CheckFrequency: time.Duration(5 * time.Second),
 		}
+	}
+
+	// Check for permissions before assignment
+	if err := CheckClusterAdminPermissions(ctx, kubeconfigPath); err == nil {
+		return nil
 	}
 
 	// Get the current user's object ID
@@ -114,7 +120,7 @@ func getCurrentUserObjectID(ctx context.Context) (string, error) {
 	}
 
 	// Create a Graph client using Azure Credentials
-	cred, err := azauth.GetAzureTokenCredentials()
+	cred, err := cmdutils.GetAzureTokenCredentials()
 	if err != nil {
 		return "", fmt.Errorf("failed to obtain a credential: %w", err)
 	}
@@ -145,7 +151,7 @@ func getCurrentUserObjectID(ctx context.Context) (string, error) {
 
 func assignClusterAdminRBACRole(ctx context.Context, subscriptionID, resourceGroupName, aksClusterName, userObjectID, roleID string) error {
 	// Create a new Azure identity client
-	cred, err := azauth.GetAzureTokenCredentials()
+	cred, err := cmdutils.GetAzureTokenCredentials()
 	if err != nil {
 		return fmt.Errorf("failed to obtain a credential: %w", err)
 	}
@@ -174,8 +180,7 @@ func assignClusterAdminRBACRole(ctx context.Context, subscriptionID, resourceGro
 		if errors.As(err, &respErr) && respErr.ErrorCode == "RoleAssignmentExists" {
 			// we could check if the roleassignment exists upfront but even when
 			// the role exists, checking for it is not always reliably detect it
-			// so there is no point why we should check. all our users have
-			// permissions to create such role assignments anyways
+			// so there is no point why we should check.
 			return nil
 		}
 		return fmt.Errorf("failed to create role assignment: %w", err)

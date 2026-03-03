@@ -21,17 +21,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/config/ev2config"
-	"github.com/Azure/ARO-Tools/pkg/types"
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/validate"
+	"github.com/Azure/ARO-Tools/config"
+	"github.com/Azure/ARO-Tools/config/ev2config"
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/topology"
+	"github.com/Azure/ARO-Tools/pipelines/types"
 
-	"github.com/Azure/ARO-Tools/pkg/topology"
+	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/validate"
 )
 
 func DefaultValidationOptions() *RawValidationOptions {
@@ -171,10 +173,10 @@ func (opts *ValidationOptions) ValidatePipelineConfigReferences(ctx context.Cont
 	group, _ := errgroup.WithContext(ctx)
 	for cloud, environments := range opts.Config.AllContexts() {
 		cloudLogger := logger.WithValues("cloud", cloud)
-		cloudLogger.Info("Validating cloud.", "cloud", cloud)
+		cloudLogger.V(3).Info("Validating cloud.", "cloud", cloud)
 		for environment := range environments {
 			envLogger := cloudLogger.WithValues("environment", environment)
-			envLogger.Info("Validating environment.")
+			envLogger.V(3).Info("Validating environment.")
 			var regions []string
 			if opts.DevMode {
 				regions = []string{opts.DevRegion}
@@ -183,7 +185,7 @@ func (opts *ValidationOptions) ValidatePipelineConfigReferences(ctx context.Cont
 			}
 			for _, region := range regions {
 				regionLogger := envLogger.WithValues("region", region)
-				regionLogger.Info("Validating region.")
+				regionLogger.V(3).Info("Validating region.")
 				prefix := fmt.Sprintf("config[%s][%s][%s]:", cloud, environment, region)
 				ev2Cloud := cloud
 				if opts.DevMode {
@@ -203,9 +205,9 @@ func (opts *ValidationOptions) ValidatePipelineConfigReferences(ctx context.Cont
 				for key, into := range map[string]*string{
 					"regionShortName": &replacements.RegionShortReplacement,
 				} {
-					value, ok := ev2Cfg.GetByPath(key)
-					if !ok {
-						return fmt.Errorf("%s %q not found in ev2 config", prefix, key)
+					value, err := ev2Cfg.GetByPath(key)
+					if err != nil {
+						return fmt.Errorf("%s %q not found in ev2 config: %w", prefix, key, err)
 					}
 					str, ok := value.(string)
 					if !ok {
@@ -219,14 +221,9 @@ func (opts *ValidationOptions) ValidatePipelineConfigReferences(ctx context.Cont
 					return fmt.Errorf("%s failed to get resolver: %w", prefix, err)
 				}
 
-				rawCfg, err := resolver.GetRegionConfiguration(region)
+				cfg, err := resolver.GetRegionConfiguration(region)
 				if err != nil {
 					return fmt.Errorf("%s failed to get region config: %w", prefix, err)
-				}
-
-				cfg, ok := config.InterfaceToConfiguration(rawCfg)
-				if !ok {
-					return fmt.Errorf("%s: invalid configuration", prefix)
 				}
 
 				if err := resolver.ValidateSchema(cfg); err != nil {
@@ -244,7 +241,7 @@ func (opts *ValidationOptions) ValidatePipelineConfigReferences(ctx context.Cont
 	return group.Wait()
 }
 
-func handleService(logger logr.Logger, context string, group *errgroup.Group, baseDir string, service topology.Service, cfg config.Configuration, shouldHandleService func(string) bool) error {
+func handleService(logger logr.Logger, context string, group *errgroup.Group, baseDir string, service topology.Service, cfg configtypes.Configuration, shouldHandleService func(string) bool) error {
 	group.Go(func() error {
 		if !shouldHandleService(service.ServiceGroup) {
 			return nil
@@ -406,17 +403,42 @@ func handleService(logger logr.Logger, context string, group *errgroup.Group, ba
 						variable: specificStep.ConfigVersion,
 						ref:      fmt.Sprintf("resourceGroups[%d].steps[%d].configVersion", i, j),
 					})
+				case "ProviderFeatureRegistration":
+					specificStep, ok := step.(*types.ProviderFeatureRegistrationStep)
+					if !ok {
+						return fmt.Errorf("%s: resourceGroups[%d].steps[%d]: have action %q, expected *types.ProviderFeatureRegistrationStep, but got %T", service.ServiceGroup, i, j, step.ActionType(), step)
+					}
+					variables = append(variables, variableRef{
+						variable: types.Value{ConfigRef: specificStep.ProviderConfigRef},
+						ref:      fmt.Sprintf("resourceGroups[%d].steps[%d].providerConfigRef", i, j),
+					})
+					variables = append(variables, variableRef{
+						variable: types.Value{Input: &specificStep.IdentityFrom},
+						ref:      fmt.Sprintf("resourceGroups[%d].steps[%d].identityFrom", i, j),
+					})
+				case "SecretSync":
+					specificStep, ok := step.(*types.SecretSyncStep)
+					if !ok {
+						return fmt.Errorf("%s: resourceGroups[%d].steps[%d]: have action %q, expected *types.SecretSyncStep, but got %T", service.ServiceGroup, i, j, step.ActionType(), step)
+					}
+					variables = append(variables, variableRef{
+						variable: types.Value{Input: &specificStep.IdentityFrom},
+						ref:      fmt.Sprintf("resourceGroups[%d].steps[%d].identityFrom", i, j),
+					})
 				}
 			}
 		}
 		for _, variable := range variables {
 			if variable.variable.ConfigRef != "" {
-				if _, ok := cfg.GetByPath(variable.variable.ConfigRef); !ok {
-					return fmt.Errorf("%s: %s: %s: configRef %q not present in configuration", context, service.ServiceGroup, variable.ref, variable.variable.ConfigRef)
+				if _, err := cfg.GetByPath(variable.variable.ConfigRef); err != nil {
+					return fmt.Errorf("%s: %s: %s: configRef %q not present in configuration: %w", context, service.ServiceGroup, variable.ref, variable.variable.ConfigRef, err)
 				}
 			}
+			if variable.variable.Value == "" && variable.variable.ConfigRef == "" && variable.variable.Input.Name == "" && variable.variable.Input.Step == "" {
+				return fmt.Errorf("%s: %s: %s: variable is empty", context, service.ServiceGroup, variable.ref)
+			}
 		}
-		logger.Info("Validated service.", "service", service.ServiceGroup)
+		logger.V(3).Info("Validated service.", "service", service.ServiceGroup)
 		return nil
 	})
 	for _, child := range service.Children {

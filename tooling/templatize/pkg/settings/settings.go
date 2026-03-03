@@ -26,6 +26,8 @@ import (
 
 type Settings struct {
 	Environments []Environment `json:"environments"`
+	// Subscriptions holds a mapping of subscription key to the subscription ID.
+	Subscriptions map[string]string `json:"subscriptions"`
 }
 
 type Environment struct {
@@ -43,6 +45,8 @@ type Parameters struct {
 	Region string `json:"region"`
 	// CxStamp is the stamp for which this environment is rendered.
 	CxStamp int `json:"cxStamp"`
+	// RegionShortOverride is a shell-ism that, when run through `echo`, outputs a replacement for the short region variable from the EV2 central config.
+	RegionShortOverride string `json:"regionShortOverride"`
 	// RegionShortSuffix is a shell-ism that, when run through `echo`, outputs a suffix for the short region variable.
 	RegionShortSuffix string `json:"regionShortSuffix"`
 }
@@ -58,12 +62,13 @@ func Load(path string) (*Settings, error) {
 }
 
 type EnvironmentParameters struct {
-	Cloud             string
-	Ev2Cloud          string
-	Environment       string
-	Region            string
-	Stamp             int
-	RegionShortSuffix string
+	Cloud               string
+	Ev2Cloud            string
+	Environment         string
+	Region              string
+	Stamp               int
+	RegionShortOverride string
+	RegionShortSuffix   string
 }
 
 func (s *Settings) Resolve(ctx context.Context, cloud, environment string) (EnvironmentParameters, error) {
@@ -96,6 +101,15 @@ func Resolve(ctx context.Context, environment Environment) (EnvironmentParameter
 			return EnvironmentParameters{}, fmt.Errorf("failed to evaluate region short suffix: %w; output: %s", err, string(evaluated))
 		}
 		out.RegionShortSuffix = strings.TrimSpace(string(evaluated))
+	}
+	if environment.Defaults.RegionShortOverride != "" {
+		evaluator := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("echo %s", environment.Defaults.RegionShortOverride))
+		evaluator.Env = os.Environ()
+		evaluated, err := evaluator.CombinedOutput()
+		if err != nil {
+			return EnvironmentParameters{}, fmt.Errorf("failed to evaluate region short override: %w; output: %s", err, string(evaluated))
+		}
+		out.RegionShortOverride = strings.TrimSpace(string(evaluated))
 	}
 	return out, nil
 }

@@ -1,0 +1,86 @@
+// Copyright 2025 Microsoft Corporation
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package middleware
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+
+	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+
+	"github.com/Azure/ARO-HCP/internal/api"
+	"github.com/Azure/ARO-HCP/internal/utils"
+)
+
+const (
+	pathSegmentResourceGroupName = "resourcegroupname"
+	pathSegmentResourceName      = "resourcename"
+	pathSegmentSubscriptionID    = "subscriptionid"
+)
+
+var patternPrefix = strings.ToLower(
+	fmt.Sprintf(
+		"/subscriptions/{%s}/resourcegroups/{%s}/providers/%s/%s/{%s}",
+		pathSegmentSubscriptionID,
+		pathSegmentResourceGroupName,
+		api.ProviderNamespace,
+		api.ClusterResourceTypeName,
+		pathSegmentResourceName,
+	),
+)
+
+// HCPResourcePattern returns a mux pattern for an HCP resource endpoint.
+// It combines the method, the /admin/v1/hcp prefix, the standard Azure
+// resource path segments, and the given suffix pattern.
+func V1HCPResourcePattern(method string, pattern string) string {
+	return fmt.Sprintf("%s /admin/v1/hcp%s%s", method, patternPrefix, pattern)
+}
+
+// MiddlewareHCPResourceID extracts and validates the HCP resource ID from
+// the request path and stores it in the request context.
+func MiddlewareHCPResourceID(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+	subscriptionID := r.PathValue(pathSegmentSubscriptionID)
+	resourceGroupName := r.PathValue(pathSegmentResourceGroupName)
+	resourceName := r.PathValue(pathSegmentResourceName)
+
+	// Validate that path values were extracted correctly
+	if subscriptionID == "" || resourceGroupName == "" || resourceName == "" {
+		http.Error(w, fmt.Sprintf("failed to extract resource ID from path: subscriptionID=%q, resourceGroupName=%q, resourceName=%q, path=%q", subscriptionID, resourceGroupName, resourceName, r.URL.Path), http.StatusInternalServerError)
+		return
+	}
+
+	resourceIDPath := strings.ToLower(
+		fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/%s/%s/%s",
+			subscriptionID,
+			resourceGroupName,
+			api.ProviderNamespace,
+			api.ClusterResourceTypeName,
+			resourceName,
+		),
+	)
+
+	resourceID, err := azcorearm.ParseResourceID(resourceIDPath)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to parse resource ID: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// using the general utils allows usage with the error wrapping and reporting which is handy.
+	ctx := utils.ContextWithResourceID(r.Context(), resourceID)
+
+	ctx = utils.ContextWithLogger(ctx, utils.LoggerFromContext(ctx).WithValues("resourceID", resourceID.String()))
+	next(w, r.WithContext(ctx))
+}

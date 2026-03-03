@@ -86,7 +86,7 @@ func (o *RawInspectOptions) Validate(ctx context.Context) (*ValidatedInspectOpti
 		return nil, err
 	}
 
-	inspectScopes := pipeline.NewStepInspectScopes()
+	inspectScopes := pipeline.NewStepInspectScopes(map[string]string{})
 	if _, ok := inspectScopes[o.Scope]; !ok {
 		scopes := make([]string, 0, len(inspectScopes))
 		for scope := range inspectScopes {
@@ -104,8 +104,8 @@ func (o *RawInspectOptions) Validate(ctx context.Context) (*ValidatedInspectOpti
 	}, nil
 }
 
-func (o *ValidatedInspectOptions) Complete() (*InspectOptions, error) {
-	completed, err := o.ValidatedPipelineOptions.Complete()
+func (o *ValidatedInspectOptions) Complete(ctx context.Context) (*InspectOptions, error) {
+	completed, err := o.ValidatedPipelineOptions.Complete(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -129,12 +129,15 @@ func (o *InspectOptions) RunInspect(ctx context.Context) error {
 	return pipeline.Inspect(
 		o.PipelineOptions.Pipeline, ctx, &pipeline.InspectOptions{
 			Scope:          o.Scope,
-			ScopeFunctions: pipeline.NewStepInspectScopes(),
+			ScopeFunctions: pipeline.NewStepInspectScopes(o.PipelineOptions.RolloutOptions.Subscriptions),
 			Format:         o.Format,
 			Step:           o.PipelineOptions.Step,
 			Region:         o.PipelineOptions.RolloutOptions.Region,
 			Configuration:  o.PipelineOptions.RolloutOptions.Config,
+			TopologyDir:    o.PipelineOptions.TopologyDir,
+			Service:        o.PipelineOptions.Service,
 			OutputFile:     o.OutputFile,
+			Concurrency:    o.PipelineOptions.RolloutOptions.Concurrency,
 		},
 	)
 }

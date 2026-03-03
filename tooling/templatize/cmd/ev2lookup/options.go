@@ -17,9 +17,10 @@ package ev2lookup
 import (
 	"fmt"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/config/ev2config"
 	"github.com/spf13/cobra"
+
+	"github.com/Azure/ARO-Tools/config/ev2config"
+	"github.com/Azure/ARO-Tools/config/types"
 )
 
 func DefaultLookupOptions() *RawLookupOptions {
@@ -55,7 +56,7 @@ type ValidatedLookupOptions struct {
 
 // completedLookupOptions is a private wrapper that enforces a call of Complete() before config generation can be invoked.
 type completedLookupOptions struct {
-	Ev2Config config.Configuration
+	Ev2Config types.Configuration
 	Path      string
 }
 
@@ -87,9 +88,9 @@ func (o *ValidatedLookupOptions) Complete() (*LookupOptions, error) {
 }
 
 func (opts *LookupOptions) Lookup() error {
-	val, ok := opts.Ev2Config.GetByPath(opts.Path)
-	if !ok {
-		return fmt.Errorf("invalid path %q", opts.Path)
+	val, err := opts.Ev2Config.GetByPath(opts.Path)
+	if err != nil {
+		return fmt.Errorf("failed to look up value: %w", err)
 	}
 	fmt.Printf("%v\n", val)
 	return nil

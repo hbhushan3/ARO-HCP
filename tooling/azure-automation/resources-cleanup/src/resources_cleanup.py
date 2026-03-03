@@ -11,63 +11,7 @@ from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.mgmt.resource import ResourceManagementClient
 from azure.mgmt.resource.resources.v2022_09_01.models._models_py3 import GenericResourceExpanded, ResourceGroup
 
-_KEY_NAME = "Name"
-_KEY_VALUE = "Value"
-_KEY_VARIABLE = "Variable"
-_KEY_CREDENTIAL = "Credential"
-
-
-def _get_automation_asset_file():
-    if os.environ.get('AUTOMATION_ASSET_FILE') is not None:
-        return os.environ.get('AUTOMATION_ASSET_FILE')
-    return os.path.join(os.path.dirname(__file__), "localassets.json")
-
-def _get_asset_value(asset_file, asset_type, asset_name):
-    try:
-        with open(asset_file) as json_data:
-            local_assets = json.load(json_data)
-    except (FileNotFoundError, json.JSONDecodeError):
-        raise LookupError(f"Asset file not found or invalid: {asset_file}")
-
-    return_value = None
-    for asset, asset_values in local_assets.items():
-        if asset == asset_type:
-            for value in asset_values:
-                if value[_KEY_NAME] == asset_name:
-                    return_value = value
-                    break
-        if return_value is not None:
-            break
-
-    return return_value
-
-def _get_asset(asset_type, asset_name):
-    local_assets_file = _get_automation_asset_file()
-    return_value = _get_asset_value(local_assets_file, asset_type, asset_name)
-
-    if return_value is None:
-        raise LookupError(f"Asset '{asset_name}' not found")
-    return return_value
-
-def get_automation_variable(name):
-    """ Returns an automation variable """
-    variable = _get_asset(_KEY_VARIABLE, name)
-    return variable[_KEY_VALUE]
-
-def get_automation_credential(name):
-    """ Returns an automation credential as a dictionary with username and password as keys """
-    credential = _get_asset(_KEY_CREDENTIAL, name)
-
-    # Return a dictionary of the credential asset
-    credential_dictionary = {}
-    credential_dictionary['username'] = credential['Username']
-    credential_dictionary['password'] = credential['Password']
-    return credential_dictionary
-
-# If DRY_RUN is TRUE, the script will print which resource groups should be deleted
-# without deleting them. If it is FALSE, the script will print which resource groups
-# should be deleted and delete those that should be deleted.
-DRY_RUN = False
+from automationassets import get_automation_variable
 
 # VERBOSE is used to control whether to print all the resources of each resource group
 # for informational purposes.
@@ -94,19 +38,22 @@ def get_date_time_from_str(date_time_str: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(date_time_str)
 
 
-def time_delta_greater_than_two_days(now: datetime.datetime, resource_group_creation_time: datetime.datetime):
-    if now is None:
-        print("now time is None")
-        return False
+def older_than(resource_group_creation_time: datetime.datetime, days: int = 30):
+    """
+    Check if the resource group creation time is older than the specified number of days.
 
-    if resource_group_creation_time is None:
-        print("resource_group_creation_time is None")
-        return False
+    Args:
+        resource_group_creation_time: Creation time of the resource group
+        days: Number of days threshold (default: 30)
 
-    time_delta = resource_group_creation_time - now
+    Returns:
+        bool: True if resource group is older than specified days, False otherwise
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    time_delta = now - resource_group_creation_time
     n_days = abs(time_delta.days)
 
-    return n_days > 2
+    return n_days > days
 
 def print_resources(resource_list: List[GenericResourceExpanded]):
     for resource in resource_list:
@@ -162,6 +109,34 @@ def process_resource_group(resource_group: ResourceGroup, resource_client: Resou
         print(f"This resource group has {len(resource_list)} resources \n")
         print_resources(resource_list)
 
+    # Special handling for hcp-underlay-pers-* resource groups
+    if resource_group_name.startswith("hcp-underlay-pers-"):
+        resource_group_creation_time = get_creation_time_of_resource_group(resource_group)
+
+        if resource_group_creation_time is None:
+            print(f"Resource group '{resource_group_name}' has no createdAt tag, skipping deletion for safety.")
+            return
+
+        if not older_than(resource_group_creation_time, days=15):
+            print(f"Personal development environment resource group '{resource_group_name}' is not older than 2 weeks, skipping.")
+            return
+
+        print(f"Personal development environment resource group '{resource_group_name}' is older than 2 weeks and should be deleted.\n")
+        if DRY_RUN:
+            return
+
+        try:
+            print(f"\nBeginning deletion of personal development environment resource group '{resource_group_name}' ...")
+            result_poller = resource_client.resource_groups.begin_delete(resource_group_name)
+            print(f"result_poller of resource group deletion: {result_poller}")
+        except HttpResponseError as err:
+            error_codes = ("DenyAssignmentAuthorizationFailed", "ScopeLocked")
+            if err.error.code in error_codes:
+                print(f"skipping deletion of resource group due to error code {err.error.code}")
+            else:
+                raise err
+        return
+
     if resource_group_has_persist_tag_as_true(resource_group):
         print(f"Persist tag is true, this resource group should NOT be deleted, skipping.")
         return
@@ -170,9 +145,13 @@ def process_resource_group(resource_group: ResourceGroup, resource_client: Resou
         print(f"Resource Group is managed, this resource group should NOT be deleted, skipping.")
         return
 
-    now = datetime.datetime.now(datetime.timezone.utc)
     resource_group_creation_time = get_creation_time_of_resource_group(resource_group)
-    if not time_delta_greater_than_two_days(now, resource_group_creation_time):
+
+    if resource_group_creation_time is None:
+        print(f"Resource group '{resource_group_name}' has no createdAt tag, skipping deletion for safety.")
+        return
+
+    if not older_than(resource_group_creation_time, days=2):
         print(f"This resource group should NOT be deleted, it is not older than two days, skipping.")
         return
 
@@ -192,10 +171,23 @@ def process_resource_group(resource_group: ResourceGroup, resource_client: Resou
             raise err
 
 def get_creation_time_of_resource_group(resource_group):
+    """
+    Get the creation time of a resource group from its createdAt tag.
+
+    Args:
+        resource_group: The resource group object
+
+    Returns:
+        datetime.datetime or None: The creation time if successfully parsed, None otherwise
+    """
     resource_group_creation_time = None
     created_at_tag = "createdAt"
     if resource_group.tags is not None and created_at_tag in resource_group.tags:
-        resource_group_creation_time = get_date_time_from_str(resource_group.tags[created_at_tag])
+        try:
+            resource_group_creation_time = get_date_time_from_str(resource_group.tags[created_at_tag])
+        except (ValueError, AttributeError) as e:
+            print(f"Warning: Failed to parse createdAt tag '{resource_group.tags[created_at_tag]}' for resource group '{resource_group.name}': {e}")
+            resource_group_creation_time = None
     return resource_group_creation_time
 
 
@@ -203,7 +195,7 @@ def get_creation_time_of_resource_group(resource_group):
 def get_subscription_id():
     try:
         return get_automation_variable("subscription_id")
-    except LookupError:
+    except:
         env_val = os.getenv("SUBSCRIPTION_ID")
         if env_val:
             return env_val
@@ -211,20 +203,72 @@ def get_subscription_id():
             "Subscription ID missing: not found in automation variables or SUBSCRIPTION_ID env var."
         )
 
+def get_client_id():
+    try:
+        return get_automation_variable("client_id")
+    except:
+        env_val = os.getenv("CLIENT_ID")
+        if env_val:
+            return env_val
+        raise ValueError(
+            "Client ID missing: not found in automation variables or CLIENT_ID env var."
+        )
+
+def get_boolean_from_string(val):
+    """
+    Convert a string representation of truth to True or False.
+
+    Accepts 'true' or 'false' in any capitalization.
+
+    Args:
+        val (str): The string to convert.
+
+    Returns:
+        bool: The boolean value corresponding to the string.
+
+    Raises:
+        ValueError: If the string does not represent a boolean value.
+    """
+    if not isinstance(val, str):
+        raise ValueError(f"Invalid truth value: {val!r} (type: {type(val).__name__}). Expected a string.")
+    val_stripped = val.strip().lower()
+    if val_stripped == 'true':
+        return True
+    if val_stripped == 'false':
+        return False
+    raise ValueError(f"Invalid truth value: {val!r}. Expected 'true' or 'false' (case-insensitive).")
+
+def get_dry_run():
+    """
+    Retrieve the dry run flag from automation variables or environment variable.
+
+    Returns:
+        bool: True if dry run is enabled, False otherwise.
+    """
+    try:
+        val = get_automation_variable("dry_run")
+        return get_boolean_from_string(val)
+    except Exception:
+        env_val = os.getenv("DRY_RUN")
+        if env_val is not None:
+            try:
+                return get_boolean_from_string(env_val)
+            except ValueError as e:
+                print(f"Warning: Invalid DRY_RUN environment variable value: {env_val!r}. Defaulting to False.")
+                return False
+        print("Info: DRY_RUN not set in automation variables or environment. Defaulting to False.")
+        return False
+
+# If DRY_RUN is TRUE, the script will print which resource groups should be deleted
+# without deleting them. If it is FALSE, the script will print which resource groups
+# should be deleted and delete those that should be deleted.
+DRY_RUN = get_dry_run()
+
 def main():
-    print("All arguments:", sys.argv)
-    # Azure Automation passes parameters as raw values without their names
-    # sys.argv[0] is the script path
-    # sys.argv[1] is the subscription ID
-    # sys.argv[2] is the managed identity ID
-    subscription_id = sys.argv[1]
-    client_id = sys.argv[2]
-    if not subscription_id:
-        raise ValueError("Subscription ID not found in automation variables or environment variables")
 
     resource_client = ResourceManagementClient(
-        credential=ManagedIdentityCredential(client_id),
-        subscription_id=subscription_id,
+        credential=ManagedIdentityCredential(client_id=get_client_id()),
+        subscription_id=get_subscription_id(),
         api_version=DEFAULT_API_VERSION
     )
 
@@ -234,7 +278,7 @@ def main():
     print(f"DRY_RUN flag is {DRY_RUN}\n")
     print(f"VERBOSE flag is {VERBOSE}\n")
 
-    process_resource_groups_of_subscription(subscription_id, resource_client)
+    process_resource_groups_of_subscription(get_subscription_id(), resource_client)
     print(f"\n'{runbook_name}' finished")
 
 if __name__ == "__main__":

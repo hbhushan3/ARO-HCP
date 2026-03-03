@@ -17,9 +17,9 @@ package configuration
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/validate"
-
+	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/explain"
 	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/render"
+	"github.com/Azure/ARO-HCP/tooling/templatize/cmd/configuration/validate"
 )
 
 func NewCommand() (*cobra.Command, error) {
@@ -35,7 +35,10 @@ func NewCommand() (*cobra.Command, error) {
 
 	commands := []func() (*cobra.Command, error){
 		render.NewCommand,
-		validate.NewCommand,
+		explain.NewCommand,
+		func() (*cobra.Command, error) {
+			return validate.NewCommand("https://github.com/Azure/ARO-HCP.git")
+		},
 	}
 	for _, newCmd := range commands {
 		c, err := newCmd()

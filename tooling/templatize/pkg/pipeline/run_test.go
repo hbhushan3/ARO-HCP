@@ -16,93 +16,358 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/testr"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
-	"github.com/Azure/ARO-Tools/pkg/types"
+	configtypes "github.com/Azure/ARO-Tools/config/types"
+	"github.com/Azure/ARO-Tools/pipelines/graph"
+	"github.com/Azure/ARO-Tools/pipelines/topology"
+	"github.com/Azure/ARO-Tools/pipelines/types"
+
+	"github.com/Azure/ARO-HCP/tooling/templatize/bicep"
 )
 
-func TestStepRun(t *testing.T) {
-	s := types.NewShellStep("step", "echo hello")
-	output, err := RunStep(s, context.Background(), &executionTargetImpl{}, &PipelineRunOptions{}, nil)
-	assert.NoError(t, err)
-	o, err := output.GetValue("output")
-	assert.NoError(t, err)
-	assert.Equal(t, o.Value, "hello\n")
-}
-
-func TestResourceGroupRun(t *testing.T) {
-	rg := &types.ResourceGroup{
-		Steps: []types.Step{
-			types.NewShellStep("step", "echo hello"),
-		},
-	}
-	o := make(map[string]Output)
-	err := RunResourceGroup(rg, context.Background(), &PipelineRunOptions{}, &executionTargetImpl{}, o)
-	assert.NoError(t, err)
-	oValue, err := o["step"].GetValue("output")
-	assert.NoError(t, err)
-	assert.Equal(t, oValue.Value, "hello\n")
-}
-
-func TestResourceGroupError(t *testing.T) {
-	rg := &types.ResourceGroup{
-		Steps: []types.Step{
-			types.NewShellStep("step1", "echo hello"),
-			types.NewShellStep("step2", "faaaaafffaa"),
-			types.NewShellStep("step3", "echo hallo"),
-		},
-	}
-	o := make(map[string]Output)
-	err := RunResourceGroup(rg, context.Background(), &PipelineRunOptions{}, &executionTargetImpl{}, o)
-	assert.ErrorContains(t, err, "faaaaafffaa: command not found\n exit status 127")
-	// Test processing ends after first error
-	oValue, err := o["step1"].GetValue("output")
-	assert.NoError(t, err)
-	assert.NoError(t, err)
-	assert.Equal(t, oValue.Value, "hello\n")
-}
-
-type testExecutionTarget struct{}
-
-func (t *testExecutionTarget) KubeConfig(_ context.Context) (string, error) {
-	return "", nil
-}
-func (t *testExecutionTarget) GetSubscriptionID() string { return "test" }
-func (t *testExecutionTarget) GetAkSClusterName() string { return "test" }
-func (t *testExecutionTarget) GetResourceGroup() string  { return "test" }
-func (t *testExecutionTarget) GetRegion() string         { return "test" }
-
-func TestResourceGroupRunRequireKubeconfig(t *testing.T) {
-	rg := &types.ResourceGroup{Steps: []types.Step{}}
-	err := RunResourceGroup(rg, context.Background(), &PipelineRunOptions{}, &testExecutionTarget{}, make(map[string]Output))
-	assert.NoError(t, err)
-}
-
-func TestPipelineRun(t *testing.T) {
+func TestMockedPipelineRun(t *testing.T) {
 	pipeline := &types.Pipeline{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
 		ResourceGroups: []*types.ResourceGroup{
 			{
-				Name:         "test",
-				Subscription: "test",
+				ResourceGroupMeta: &types.ResourceGroupMeta{
+					Name:          "rg",
+					ResourceGroup: "resourceGroup",
+					Subscription:  TEST_SUBSCRIPTION_ID,
+				},
 				Steps: []types.Step{
-					types.NewShellStep("step", "echo hello"),
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "root"},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "second"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "root",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "third"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "second",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "fourth"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg2",
+									Step:          "second2",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "fifth"},
+					},
+				},
+			},
+			{
+				ResourceGroupMeta: &types.ResourceGroupMeta{
+					Name:          "rg2",
+					ResourceGroup: "resourceGroup2",
+					Subscription:  TEST_SUBSCRIPTION_ID,
+				},
+				Steps: []types.Step{
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "root2"},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "second2"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg2",
+									Step:          "root2",
+								},
+							}},
+						}},
+					},
 				},
 			},
 		},
 	}
 
-	output, err := RunPipeline(pipeline, context.Background(), &PipelineRunOptions{
+	lock := sync.Mutex{}
+	var order []types.StepDependency
+
+	var executor Executor = func(id graph.Identifier, s types.Step, ctx context.Context, executionTarget ExecutionTarget, options *StepRunOptions, state *ExecutionState) (Output, DetailsProducer, error) {
+		logger, err := logr.FromContext(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		logger.Info("running step", "resourceGroup", executionTarget.GetResourceGroup(), "step", s.StepName())
+
+		lock.Lock()
+		defer lock.Unlock()
+		order = append(order, types.StepDependency{ResourceGroup: executionTarget.GetResourceGroup(), Step: s.StepName()})
+
+		return nil, nil, nil
+	}
+
+	t.Helper()
+	logger := testr.New(t)
+	ctx := logr.NewContext(t.Context(), testr.New(t))
+
+	logger.Info("starting bicep language server...")
+	lspClient, err := bicep.StartJSONRPCServer(ctx, logger, false)
+	if err != nil {
+		t.Fatalf("failed to start bicep language server: %v", err)
+	}
+
+	if _, err := RunPipeline(&topology.Service{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
+	}, pipeline, logr.NewContext(t.Context(), testr.New(t)), &PipelineRunOptions{
+		BaseRunOptions: BaseRunOptions{
+			BicepClient: lspClient,
+		},
 		SubsciptionLookupFunc: func(_ context.Context, _ string) (string, error) {
 			return "test", nil
 		},
-	})
+	}, executor); err != nil {
+		t.Error(err)
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+	slices.SortFunc(order, graph.CompareStepDependencies)
+
+	if diff := cmp.Diff(order, []types.StepDependency{
+		{ResourceGroup: "resourceGroup", Step: "fifth"},
+		{ResourceGroup: "resourceGroup", Step: "fourth"},
+		{ResourceGroup: "resourceGroup", Step: "root"},
+		{ResourceGroup: "resourceGroup", Step: "second"},
+		{ResourceGroup: "resourceGroup", Step: "third"},
+		{ResourceGroup: "resourceGroup2", Step: "root2"},
+		{ResourceGroup: "resourceGroup2", Step: "second2"},
+	}); len(diff) != 0 {
+		t.Errorf("incorrect step execution order: %s", diff)
+	}
+}
+
+func TestMockedPipelineRunError(t *testing.T) {
+	pipeline := &types.Pipeline{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
+		ResourceGroups: []*types.ResourceGroup{
+			{
+				ResourceGroupMeta: &types.ResourceGroupMeta{
+					Name:          "rg",
+					ResourceGroup: "resourceGroup",
+					Subscription:  TEST_SUBSCRIPTION_ID,
+				},
+				Steps: []types.Step{
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "root"},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "second"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "root",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "third"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "second",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "fourth"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg2",
+									Step:          "second2",
+								},
+							}},
+						}},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "fifth"},
+					},
+				},
+			},
+			{
+				ResourceGroupMeta: &types.ResourceGroupMeta{
+					Name:          "rg2",
+					ResourceGroup: "resourceGroup2",
+					Subscription:  "subscription",
+				},
+				Steps: []types.Step{
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "root2"},
+					},
+					&types.ShellStep{
+						StepMeta: types.StepMeta{Name: "second2"},
+						Variables: []types.Variable{{
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg2",
+									Step:          "root2",
+								},
+							}},
+						}, { // since we cancel the context when rg2/second2 fails, if this does not depend on everything, it's not deterministic which will have finished
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "fifth",
+								},
+							}},
+						}, {
+							Value: types.Value{Input: &types.Input{
+								StepDependency: types.StepDependency{
+									ResourceGroup: "rg",
+									Step:          "third",
+								},
+							}},
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	lock := sync.Mutex{}
+	var order []types.StepDependency
+
+	var executor Executor = func(id graph.Identifier, s types.Step, ctx context.Context, executionTarget ExecutionTarget, options *StepRunOptions, state *ExecutionState) (Output, DetailsProducer, error) {
+		logger, err := logr.FromContext(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		logger.Info("running step", "resourceGroup", executionTarget.GetResourceGroup(), "step", s.StepName())
+
+		lock.Lock()
+		defer lock.Unlock()
+		order = append(order, types.StepDependency{ResourceGroup: executionTarget.GetResourceGroup(), Step: s.StepName()})
+
+		if s.StepName() == "second" {
+			return nil, nil, fmt.Errorf("oops")
+		}
+
+		return nil, nil, nil
+	}
+
+	t.Helper()
+	logger := testr.New(t)
+	ctx := logr.NewContext(t.Context(), testr.New(t))
+
+	logger.Info("starting bicep language server...")
+	lspClient, err := bicep.StartJSONRPCServer(ctx, logger, false)
+	if err != nil {
+		t.Fatalf("failed to start bicep language server: %v", err)
+	}
+
+	if _, err := RunPipeline(&topology.Service{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
+	}, pipeline, logr.NewContext(t.Context(), testr.New(t)), &PipelineRunOptions{
+		BaseRunOptions: BaseRunOptions{
+			BicepClient: lspClient,
+		},
+		SubsciptionLookupFunc: func(_ context.Context, _ string) (string, error) {
+			return "test", nil
+		},
+	}, executor); err == nil {
+		t.Errorf("expected an error, got none")
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+	slices.SortFunc(order, graph.CompareStepDependencies)
+
+	if diff := cmp.Diff(order, []types.StepDependency{
+		{ResourceGroup: "resourceGroup", Step: "fifth"},
+		{ResourceGroup: "resourceGroup", Step: "root"},
+		{ResourceGroup: "resourceGroup", Step: "second"},
+		{ResourceGroup: "resourceGroup2", Step: "root2"},
+	}); len(diff) != 0 {
+		t.Errorf("incorrect step execution order: %s", diff)
+	}
+}
+
+func TestPipelineRun(t *testing.T) {
+	pipeline := &types.Pipeline{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
+		ResourceGroups: []*types.ResourceGroup{
+			{
+				ResourceGroupMeta: &types.ResourceGroupMeta{
+					Name:          "test",
+					ResourceGroup: "test",
+					Subscription:  TEST_SUBSCRIPTION_ID,
+				},
+				Steps: []types.Step{
+					&types.ShellStep{
+						StepMeta: types.StepMeta{
+							Name:   "step",
+							Action: "Shell",
+						},
+						Command: "echo hello",
+					},
+				},
+			},
+		},
+	}
+
+	t.Helper()
+	logger := testr.New(t)
+	ctx := logr.NewContext(t.Context(), testr.New(t))
+
+	logger.Info("starting bicep language server...")
+	lspClient, err := bicep.StartJSONRPCServer(ctx, logger, false)
+	if err != nil {
+		t.Fatalf("failed to start bicep language server: %v", err)
+	}
+
+	output, err := RunPipeline(&topology.Service{
+		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
+	}, pipeline, logr.NewContext(t.Context(), testr.New(t)), &PipelineRunOptions{
+		BaseRunOptions: BaseRunOptions{
+			BicepClient: lspClient,
+			SubscriptionIdToAzureConfigDirectory: map[string]string{
+				TEST_SUBSCRIPTION_ID: "test",
+			},
+		},
+		SubsciptionLookupFunc: func(_ context.Context, _ string) (string, error) {
+			return "test", nil
+		},
+	}, RunStep)
 
 	assert.NoError(t, err)
-	oValue, err := output["step"].GetValue("output")
+	oValue, err := output[pipeline.ServiceGroup]["test"]["step"].GetValue("output")
 	assert.NoError(t, err)
 	assert.Equal(t, oValue.Value, "hello\n")
 }
@@ -124,19 +389,23 @@ func TestArmGetValue(t *testing.T) {
 func TestAddInputVars(t *testing.T) {
 	testCases := []struct {
 		name          string
-		cfg           config.Configuration
-		input         map[string]Output
+		cfg           configtypes.Configuration
+		input         Outputs
 		stepVariables []types.Variable
 		expected      map[string]any
 		err           string
 	}{
 		{
 			name: "output chaining",
-			input: map[string]Output{
-				"step1": ArmOutput{
-					"output1": map[string]any{
-						"type":  "String",
-						"value": "bar",
+			input: Outputs{
+				"Microsoft.Azure.ARO.Whatever": map[string]map[string]Output{
+					"rg": {
+						"step1": ArmOutput{
+							"output1": map[string]any{
+								"type":  "String",
+								"value": "bar",
+							},
+						},
 					},
 				},
 			},
@@ -146,7 +415,10 @@ func TestAddInputVars(t *testing.T) {
 					Value: types.Value{
 						Input: &types.Input{
 							Name: "output1",
-							Step: "step1",
+							StepDependency: types.StepDependency{
+								ResourceGroup: "rg",
+								Step:          "step1",
+							},
 						},
 					},
 				},
@@ -155,11 +427,15 @@ func TestAddInputVars(t *testing.T) {
 		},
 		{
 			name: "output chaining missing step",
-			input: map[string]Output{
-				"step1": ArmOutput{
-					"output1": map[string]any{
-						"type":  "String",
-						"value": "bar",
+			input: Outputs{
+				"Microsoft.Azure.ARO.Whatever": map[string]map[string]Output{
+					"rg": {
+						"step1": ArmOutput{
+							"output1": map[string]any{
+								"type":  "String",
+								"value": "bar",
+							},
+						},
 					},
 				},
 			},
@@ -169,7 +445,10 @@ func TestAddInputVars(t *testing.T) {
 					Value: types.Value{
 						Input: &types.Input{
 							Name: "output1",
-							Step: "missingstep",
+							StepDependency: types.StepDependency{
+								ResourceGroup: "rg",
+								Step:          "missingstep",
+							},
 						},
 					},
 				},
@@ -178,11 +457,15 @@ func TestAddInputVars(t *testing.T) {
 		},
 		{
 			name: "output chaining missing variable",
-			input: map[string]Output{
-				"step1": ArmOutput{
-					"output1": map[string]any{
-						"type":  "String",
-						"value": "bar",
+			input: Outputs{
+				"Microsoft.Azure.ARO.Whatever": map[string]map[string]Output{
+					"rg": {
+						"step1": ArmOutput{
+							"output1": map[string]any{
+								"type":  "String",
+								"value": "bar",
+							},
+						},
 					},
 				},
 			},
@@ -192,7 +475,10 @@ func TestAddInputVars(t *testing.T) {
 					Value: types.Value{
 						Input: &types.Input{
 							Name: "missingvar",
-							Step: "step1",
+							StepDependency: types.StepDependency{
+								ResourceGroup: "rg",
+								Step:          "step1",
+							},
 						},
 					},
 				},
@@ -213,8 +499,8 @@ func TestAddInputVars(t *testing.T) {
 		},
 		{
 			name: "configref",
-			cfg: config.Configuration{
-				"some": config.Configuration{
+			cfg: configtypes.Configuration{
+				"some": map[string]any{
 					"config": "bar",
 				},
 			},
@@ -230,8 +516,8 @@ func TestAddInputVars(t *testing.T) {
 		},
 		{
 			name: "configref missing",
-			cfg: config.Configuration{
-				"some": config.Configuration{
+			cfg: configtypes.Configuration{
+				"some": map[string]any{
 					"config": "bar",
 				},
 			},
@@ -248,7 +534,7 @@ func TestAddInputVars(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := getInputValues(tc.stepVariables, tc.cfg, tc.input)
+			result, err := getInputValues("Microsoft.Azure.ARO.Whatever", tc.stepVariables, tc.cfg, tc.input)
 			t.Log(result)
 			if tc.err != "" {
 				assert.Error(t, err, tc.err)
@@ -256,6 +542,106 @@ func TestAddInputVars(t *testing.T) {
 				assert.NoError(t, err)
 				assert.Empty(t, cmp.Diff(tc.expected, result))
 			}
+		})
+	}
+}
+
+func TestShouldRetryError(t *testing.T) {
+	testCases := []struct {
+		name     string
+		step     types.Step
+		err      error
+		expected bool
+	}{
+		{
+			name: "should retry",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: &types.AutomatedRetry{
+						ErrorContainsAny: []string{"error"},
+					},
+				},
+			},
+			err:      fmt.Errorf("error"),
+			expected: true,
+		},
+		{
+			name: "should not retry",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: &types.AutomatedRetry{
+						ErrorContainsAny: []string{"this is broken"},
+					},
+				},
+			},
+			err:      fmt.Errorf("other error"),
+			expected: false,
+		},
+		{
+			name: "no retries",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: nil,
+				},
+			},
+			err:      fmt.Errorf("other error"),
+			expected: false,
+		},
+		{
+			name: "nil error",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: &types.AutomatedRetry{
+						ErrorContainsAny: []string{"this is broken"},
+					},
+				},
+			},
+			err:      nil,
+			expected: false,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldRetryError(testr.New(t), tc.step, tc.err)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestShouldExecuteStep(t *testing.T) {
+	testCases := []struct {
+		name     string
+		step     types.Step
+		runCount int
+		expected bool
+	}{
+		{
+			name: "should execute",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: &types.AutomatedRetry{
+						MaximumRetryCount: 1,
+					},
+				},
+			},
+			runCount: 0,
+			expected: true,
+		},
+		{
+			name: "default, no retries",
+			step: &types.ShellStep{
+				StepMeta: types.StepMeta{
+					AutomatedRetry: nil,
+				},
+			},
+			runCount: 0,
+			expected: true,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldExecuteStep(tc.step, tc.runCount)
+			assert.Equal(t, tc.expected, result)
 		})
 	}
 }

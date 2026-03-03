@@ -19,21 +19,25 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/Azure/ARO-Tools/pkg/config/ev2config"
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/settings"
+	"github.com/Azure/ARO-Tools/config"
+	"github.com/Azure/ARO-Tools/config/ev2config"
+	"github.com/Azure/ARO-Tools/config/types"
 
-	"github.com/Azure/ARO-Tools/pkg/config"
+	"github.com/Azure/ARO-HCP/tooling/templatize/bicep"
+	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/settings"
 )
 
 func DefaultRolloutOptions() *RawRolloutOptions {
 	return &RawRolloutOptions{
-		BaseOptions: DefaultOptions(),
+		BaseOptions:  DefaultOptions(),
+		StepCacheDir: ".step-cache",
 	}
 }
 
-func NewRolloutOptions(config config.Configuration) *RolloutOptions {
+func NewRolloutOptions(config types.Configuration) *RolloutOptions {
 	return &RolloutOptions{
 		completedRolloutOptions: &completedRolloutOptions{
 			Config: config,
@@ -52,6 +56,8 @@ func BindRolloutOptions(opts *RawRolloutOptions, cmd *cobra.Command) error {
 	cmd.Flags().StringToStringVar(&opts.ExtraVars, "extra-args", opts.ExtraVars, "Extra arguments to be used config templating")
 	cmd.Flags().StringVar(&opts.DevSettingsFile, "dev-settings-file", opts.DevSettingsFile, "File to load environment details from.")
 	cmd.Flags().StringVar(&opts.DevEnvironment, "dev-environment", opts.DevEnvironment, "Name of the developer environment to use.")
+	cmd.Flags().StringVar(&opts.StepCacheDir, "step-cache-dir", opts.StepCacheDir, "Directory where cached step outputs will be stored.")
+	cmd.Flags().IntVar(&opts.Concurrency, "concurrency", opts.Concurrency, "Number of concurrent routines to use when running the pipeline. If unset/set to 0, unbounded concurrency is used.")
 
 	for _, flag := range []string{
 		"dev-settings-file",
@@ -65,20 +71,27 @@ func BindRolloutOptions(opts *RawRolloutOptions, cmd *cobra.Command) error {
 
 // RawRolloutOptions holds input values.
 type RawRolloutOptions struct {
-	Region            string
-	RegionShortSuffix string
-	Stamp             string
-	ExtraVars         map[string]string
-	BaseOptions       *RawOptions
+	Region              string
+	RegionShortOverride string
+	RegionShortSuffix   string
+	Stamp               string
+	ExtraVars           map[string]string
+	BaseOptions         *RawOptions
 
 	DevSettingsFile string
 	DevEnvironment  string
+
+	StepCacheDir string
+
+	Concurrency int
 }
 
 // validatedRolloutOptions is a private wrapper that enforces a call of Validate() before Complete() can be invoked.
 type validatedRolloutOptions struct {
 	*RawRolloutOptions
 	*ValidatedOptions
+
+	Subscriptions map[string]string
 }
 
 type ValidatedRolloutOptions struct {
@@ -88,8 +101,12 @@ type ValidatedRolloutOptions struct {
 
 type completedRolloutOptions struct {
 	*ValidatedRolloutOptions
-	Options *Options
-	Config  config.Configuration
+	Options       *Options
+	Config        types.Configuration
+	Subscriptions map[string]string
+	StepCacheDir  string
+
+	BicepClient *bicep.LSPClient
 }
 
 type RolloutOptions struct {
@@ -101,6 +118,7 @@ func (o *RawRolloutOptions) Validate(ctx context.Context) (*ValidatedRolloutOpti
 	if o.DevEnvironment != "" && o.DevSettingsFile == "" {
 		return nil, fmt.Errorf("developer environment %s chosen, but not --dev-settings-file provided", o.DevEnvironment)
 	}
+	var subscriptions map[string]string
 	if o.DevEnvironment != "" && o.DevSettingsFile != "" {
 		for name, value := range map[string]string{
 			"environment":       o.BaseOptions.DeployEnv,
@@ -114,6 +132,10 @@ func (o *RawRolloutOptions) Validate(ctx context.Context) (*ValidatedRolloutOpti
 
 		if o.BaseOptions.Cloud == "" {
 			return nil, fmt.Errorf("provide the cloud for dev environment %s with --cloud", o.DevEnvironment)
+		}
+
+		if o.RegionShortOverride != "" && o.RegionShortSuffix != "" {
+			return nil, fmt.Errorf("regionShortOverride and regionShortSuffix cannot be provided together")
 		}
 
 		devSettings, err := settings.Load(o.DevSettingsFile)
@@ -134,7 +156,9 @@ func (o *RawRolloutOptions) Validate(ctx context.Context) (*ValidatedRolloutOpti
 		o.BaseOptions.DeployEnv = env.Environment
 		o.Region = region
 		o.RegionShortSuffix = env.RegionShortSuffix
+		o.RegionShortOverride = env.RegionShortOverride
 		o.Stamp = strconv.Itoa(env.Stamp)
+		subscriptions = devSettings.Subscriptions
 	}
 
 	validatedBaseOptions, err := o.BaseOptions.Validate()
@@ -146,11 +170,12 @@ func (o *RawRolloutOptions) Validate(ctx context.Context) (*ValidatedRolloutOpti
 		validatedRolloutOptions: &validatedRolloutOptions{
 			RawRolloutOptions: o,
 			ValidatedOptions:  validatedBaseOptions,
+			Subscriptions:     subscriptions,
 		},
 	}, nil
 }
 
-func (o *ValidatedRolloutOptions) Complete() (*RolloutOptions, error) {
+func (o *ValidatedRolloutOptions) Complete(ctx context.Context) (*RolloutOptions, error) {
 	completed, err := o.ValidatedOptions.Complete()
 	if err != nil {
 		return nil, err
@@ -164,13 +189,16 @@ func (o *ValidatedRolloutOptions) Complete() (*RolloutOptions, error) {
 		return nil, fmt.Errorf("error loading embedded ev2 config: %v", err)
 	}
 
-	rawRegionShort, present := ev2Cfg.GetByPath("regionShortName")
-	if !present {
-		return nil, fmt.Errorf("regionShortName not found for ev2Config[%s][%s]", o.Ev2Cloud, o.Region)
+	rawRegionShort, err := ev2Cfg.GetByPath("regionShortName")
+	if err != nil {
+		return nil, fmt.Errorf("regionShortName not found for ev2Config[%s][%s]: %w", o.Ev2Cloud, o.Region, err)
 	}
 	regionShort, isString := rawRegionShort.(string)
 	if !isString {
 		return nil, fmt.Errorf("regionShortName is %T, not string for ev2Config[%s][%s]", rawRegionShort, o.Ev2Cloud, o.Region)
+	}
+	if o.RegionShortOverride != "" {
+		regionShort = o.RegionShortOverride
 	}
 
 	resolver, err := completed.ConfigProvider.GetResolver(&config.ConfigReplacements{
@@ -197,16 +225,24 @@ func (o *ValidatedRolloutOptions) Complete() (*RolloutOptions, error) {
 	}
 	variables["extraVars"] = extraVars
 
-	cfg, ok := config.InterfaceToConfiguration(variables)
-	if !ok {
-		return nil, fmt.Errorf("invalid configuration")
+	logger, err := logr.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	bicepClient, err := bicep.StartJSONRPCServer(ctx, logger, false)
+	if err != nil {
+		return nil, err
 	}
 
 	return &RolloutOptions{
 		completedRolloutOptions: &completedRolloutOptions{
 			ValidatedRolloutOptions: o,
 			Options:                 completed,
-			Config:                  cfg,
+			Config:                  variables,
+			Subscriptions:           o.Subscriptions,
+			StepCacheDir:            o.StepCacheDir,
+			BicepClient:             bicepClient,
 		},
 	}, nil
 }

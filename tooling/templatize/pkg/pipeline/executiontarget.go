@@ -18,40 +18,50 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Azure/ARO-Tools/tools/cmdutils"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
 
 	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/aks"
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/azauth"
 )
 
-func LookupSubscriptionID(ctx context.Context, subscriptionName string) (string, error) {
-	// Create a new Azure identity client
-	cred, err := azauth.GetAzureTokenCredentials()
-	if err != nil {
-		return "", fmt.Errorf("failed to obtain a credential: %v", err)
-	}
+type SubscriptionLookup func(ctx context.Context, subscriptionName string) (string, error)
 
-	// Create a new subscriptions client
-	client, err := armsubscriptions.NewClient(cred, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create subscriptions client: %v", err)
-	}
-
-	// List subscriptions and find the one with the matching name
-	pager := client.NewListPager(nil)
-	for pager.More() {
-		page, err := pager.NextPage(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to get next page of subscriptions: %v", err)
+func LookupSubscriptionID(subscriptions map[string]string) SubscriptionLookup {
+	return func(ctx context.Context, subscriptionName string) (string, error) {
+		// First, check in the explicit registry
+		if id, found := subscriptions[subscriptionName]; found {
+			return id, nil
 		}
-		for _, sub := range page.Value {
-			if sub.DisplayName != nil && *sub.DisplayName == subscriptionName {
-				return *sub.SubscriptionID, nil
+
+		// Otherwise, do a lookup against Azure using the display name
+		// Create a new Azure identity client
+		cred, err := cmdutils.GetAzureTokenCredentials()
+		if err != nil {
+			return "", fmt.Errorf("failed to obtain a credential: %v", err)
+		}
+
+		// Create a new subscriptions client
+		client, err := armsubscriptions.NewClient(cred, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to create subscriptions client: %v", err)
+		}
+
+		// List subscriptions and find the one with the matching name
+		pager := client.NewListPager(nil)
+		for pager.More() {
+			page, err := pager.NextPage(ctx)
+			if err != nil {
+				return "", fmt.Errorf("failed to get next page of subscriptions: %v", err)
+			}
+			for _, sub := range page.Value {
+				if sub.DisplayName != nil && *sub.DisplayName == subscriptionName {
+					return *sub.SubscriptionID, nil
+				}
 			}
 		}
-	}
 
-	return "", fmt.Errorf("subscription with name %q not found", subscriptionName)
+		return "", fmt.Errorf("subscription with name %q not found", subscriptionName)
+	}
 }
 
 func KubeConfig(ctx context.Context, subscriptionID, resourceGroup, aksClusterName string) (string, error) {

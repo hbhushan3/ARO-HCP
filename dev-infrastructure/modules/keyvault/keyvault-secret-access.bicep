@@ -11,11 +11,16 @@ param secretName string = ''
   'Key Vault Certificate User'
   'Key Vault Certificates Officer'
   'Key Vault Crypto Officer'
+  'Key Vault Reader'
+  'Azure Service Deploy Release Management Key Vault Secrets User'
 ])
 param roleName string
 
-@description('The principal id of the managed identity that will be assigned access to the secret in KV')
-param managedIdentityPrincipalId string
+@description('The principal ids of the managed identity that will be assigned access to the secret in KV')
+param managedIdentityPrincipalIds array
+
+@description('Roles used for EV2 KeyVault access, i.e. geneva log access')
+param kvCertAccessRoleId string = ''
 
 var roleResourceIds = {
   // Perform any action on the secrets of a key vault, except manage permissions.
@@ -43,6 +48,16 @@ var roleResourceIds = {
     'Microsoft.Authorization/roleDefinitions/',
     '14b46e9e-c2b7-41b4-b07b-48a6ebf60603'
   )
+  // Read metadata of key vaults and its certificates, keys, and secrets. Cannot read sensitive values such as secret contents or key material. Only works for key vaults that use the 'Azure role-based access control' permission model.
+  'Key Vault Reader': subscriptionResourceId(
+    'Microsoft.Authorization/roleDefinitions/',
+    '21090545-7ca7-4776-b22c-e363652d74d2'
+  )
+  // Used for EV2 KeyVault access, i.e. geneva log access
+  'Azure Service Deploy Release Management Key Vault Secrets User': subscriptionResourceId(
+    'Microsoft.Authorization/roleDefinitions/',
+    kvCertAccessRoleId
+  )
 }
 
 resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
@@ -54,22 +69,26 @@ resource secret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = if (se
   name: secretName
 }
 
-resource secretAccessPermission 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (secretName != '') {
-  scope: secret
-  name: guid(kv.id, managedIdentityPrincipalId, secretName, roleResourceIds[roleName])
-  properties: {
-    roleDefinitionId: roleResourceIds[roleName]
-    principalId: managedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
+resource secretAccessPermission 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for managedIdentityPrincipalId in managedIdentityPrincipalIds: if (secretName != '') {
+    scope: secret
+    name: guid(kv.id, managedIdentityPrincipalId, secretName, roleResourceIds[roleName])
+    properties: {
+      roleDefinitionId: roleResourceIds[roleName]
+      principalId: managedIdentityPrincipalId
+      principalType: 'ServicePrincipal'
+    }
   }
-}
+]
 
-resource keyVaultAccessPermission 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (secretName == '') {
-  scope: kv
-  name: guid(kv.id, managedIdentityPrincipalId, roleResourceIds[roleName])
-  properties: {
-    roleDefinitionId: roleResourceIds[roleName]
-    principalId: managedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
+resource keyVaultAccessPermission 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for managedIdentityPrincipalId in managedIdentityPrincipalIds: if (secretName == '') {
+    scope: kv
+    name: guid(kv.id, managedIdentityPrincipalId, roleResourceIds[roleName])
+    properties: {
+      roleDefinitionId: roleResourceIds[roleName]
+      principalId: managedIdentityPrincipalId
+      principalType: 'ServicePrincipal'
+    }
   }
-}
+]
