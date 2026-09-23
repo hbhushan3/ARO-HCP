@@ -12,7 +12,10 @@ spec:
   replicas: {{ .Values.deployment.replicas }}
   strategy:
     rollingUpdate:
-      maxSurge: 0
+      # maxSurge: 0 made the rollout strictly serial, so wall-clock scaled with
+      # replica count and blew the Helm wait budget (AROSLSRE-2229). The maestro
+      # PDB (minAvailable: 1) still keeps a serving pod during the roll.
+      maxSurge: 1
       maxUnavailable: 1
     type: RollingUpdate
   template:
@@ -112,10 +115,6 @@ spec:
           mountPath: /secrets/mqtt-creds
           readOnly: true
         env:
-        - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: '{{ .Values.tracing.address }}'
-        - name: OTEL_TRACES_EXPORTER
-          value: '{{ .Values.tracing.exporter }}'
         - name: "AMS_ENV"
           value: "production"
         - name: POD_NAME
