@@ -18,13 +18,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 
 	"github.com/Azure/ARO-Tools/pipelines/graph"
 	"github.com/Azure/ARO-Tools/pipelines/types"
-
-	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/istio"
+	"github.com/Azure/ARO-Tools/tools/istio-upgrade/pkg/istio"
 )
 
 func configString(val any) string {
@@ -37,15 +37,27 @@ func configString(val any) string {
 	return fmt.Sprintf("%v", val)
 }
 
-func runIstioUpgradeStep(id graph.Identifier, step *types.IstioUpgradeStep, ctx context.Context, options *StepRunOptions, executionTarget ExecutionTarget) error {
+func runIstioUpgradeStep(id graph.Identifier, step *types.IstioUpgradeStep, ctx context.Context, options *StepRunOptions, executionTarget ExecutionTarget, state *ExecutionState) error {
 	logger := logr.FromContextOrDiscard(ctx).WithValues("stepID", id)
 
-	kubeconfigFile, err := KubeConfig(ctx, executionTarget.GetSubscriptionID(), executionTarget.GetResourceGroup(), step.AKSCluster)
+	state.RLock()
+	outputs := state.GetOutputs(id.Stamp)
+	state.RUnlock()
+
+	clusterName, err := resolveValue(step.AKSCluster, options.Configuration, outputs, id.ServiceGroup)
+	if err != nil {
+		return fmt.Errorf("failed to resolve aksCluster: %w", err)
+	}
+	if clusterName == "" {
+		return fmt.Errorf("aksCluster resolved to an empty value")
+	}
+
+	kubeconfigFile, err := KubeConfig(ctx, executionTarget.GetSubscriptionID(), executionTarget.GetResourceGroup(), clusterName)
 	if err != nil {
 		return fmt.Errorf("failed to prepare kubeconfig: %w", err)
 	}
 	if kubeconfigFile == "" {
-		return fmt.Errorf("kubeconfig resolved to empty path for cluster %s", step.AKSCluster)
+		return fmt.Errorf("kubeconfig resolved to empty path for cluster %s", clusterName)
 	}
 	defer func() {
 		if err := os.Remove(kubeconfigFile); err != nil {
@@ -83,13 +95,26 @@ func runIstioUpgradeStep(id graph.Identifier, step *types.IstioUpgradeStep, ctx 
 
 	opts := istio.DefaultUpgradeOptions()
 	opts.ResourceGroup = executionTarget.GetResourceGroup()
-	opts.ClusterName = step.AKSCluster
-	opts.KubeconfigPath = kubeconfigFile
+	opts.ClusterName = clusterName
 	opts.Versions = configString(versions)
 	opts.Tag = configString(tag)
 	opts.IngressIPName = configString(ipName)
 	opts.RegionRG = configString(regionRG)
-	opts.DryRun = step.DryRun
+
+	if step.Timeout != "" {
+		d, err := time.ParseDuration(step.Timeout)
+		if err != nil {
+			return fmt.Errorf("failed to parse istio upgrade step timeout %q: %w", step.Timeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("istio upgrade step timeout must be positive, got %q", step.Timeout)
+		}
+		opts.OverallTimeout = d
+	} else {
+		// Rely on the pipeline runner context; DefaultUpgradeOptions uses 60m which would
+		// disagree with the runner's 30m default when timeout is unset in YAML.
+		opts.OverallTimeout = 0
+	}
 
 	return istio.RunUpgrade(ctx, opts, aksClient, kubeClient)
 }

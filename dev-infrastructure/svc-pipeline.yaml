@@ -480,6 +480,10 @@ resourceGroups:
       - "AnmPreconditionFailedException"
       - "MaxRetryCountReached"
       - "ServiceUnavailable"
+      # Transient RBAC propagation lag, mostly on fresh region buildout: the
+      # deployment identity's Key Vault role assignment (needed to create the
+      # aks-etcd-encryption key) may not have propagated yet. Retry once it lands.
+      - "ForbiddenByRbac"
       maximumRetryCount: 3
       durationBetweenRetries: 2m
   - name: upgrade-aks-cluster
@@ -503,8 +507,8 @@ resourceGroups:
       step: cluster
   - name: cs-postgres-access
     action: Shell
-    command: ./scripts/postgres-access/postgres-access
-    workingDir: .
+    command: ./postgres-access
+    workingDir: ./scripts/postgres-access
     shellIdentity:
       input:
         resourceGroup: global
@@ -537,8 +541,8 @@ resourceGroups:
       step: subscription-output
   - name: maestro-postgres-access
     action: Shell
-    command: ./scripts/postgres-access/postgres-access
-    workingDir: .
+    command: ./postgres-access
+    workingDir: ./scripts/postgres-access
     shellIdentity:
       input:
         resourceGroup: global
@@ -676,6 +680,12 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      - "not ready. status: Unknown"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
+      # ACI can fail before Helm runs with no execution log; retry its waiting-to-run signature.
+      - '"DetailStatus": "Waiting to run"'
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: cleanup-prometheus-pvc
@@ -691,6 +701,25 @@ resourceGroups:
         resourceGroup: global
         step: output
         name: globalMSIId
+  - name: istio-upgrade
+    aksCluster:
+      configRef: svc.aks.name
+    action: IstioUpgrade
+    timeout: 60m
+    dependsOn:
+    - resourceGroup: service
+      step: prometheus
+    identityFrom:
+      resourceGroup: global
+      step: output
+      name: globalMSIId
+    automatedRetry:
+      errorContainsAny:
+      - "control plane unhealthy"
+      - "retiring revision would orphan workloads"
+      - "ingress gateway unhealthy"
+      maximumRetryCount: 3
+      durationBetweenRetries: 2m
   - name: istio-config
     aksCluster: '{{ .svc.aks.name }}'
     action: Helm
@@ -708,7 +737,7 @@ resourceGroups:
     kustoTable: 'containerLogs'
     dependsOn:
     - resourceGroup: service
-      step: prometheus
+      step: istio-upgrade
     identityFrom:
       resourceGroup: global
       step: output
@@ -730,34 +759,11 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
-  - name: istio-upgrade
-    # - updates workload to use istio on version svc.istio.targetVersion
-    # - configures istio IP tag usage
-    aksCluster: '{{ .svc.aks.name }}'
-    action: Shell
-    command: ./istio.sh
-    workingDir: ./scripts
-    variables:
-    - name: TARGET_VERSION
-      configRef: svc.istio.targetVersion
-    - name: ISTIOCTL_VERSION
-      configRef: svc.istio.istioctlVersion
-    - name: ISTIO_INGRESS_GATEWAY_IP_ADDRESS_NAME
-      configRef: svc.istio.ingressGatewayIPAddressName
-    - name: TAG
-      configRef: svc.istio.tag
-    - name: REGION_RESOURCEGROUP
-      configRef: regionRG
-    dependsOn:
-    - resourceGroup: service
-      step: istio-config
-    shellIdentity:
-      input:
-        resourceGroup: global
-        step: output
-        name: globalMSIId
   - name: acrpull
     aksCluster: '{{ .svc.aks.name }}'
     action: Helm
@@ -782,6 +788,9 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: service-lifecycle
@@ -808,6 +817,9 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: image-registry-policy
@@ -836,6 +848,9 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: arobit-output
@@ -886,6 +901,9 @@ resourceGroups:
       - "500 Internal Server Error"
       - "Internal error occurred"
       - "arobit-forwarder not ready. status: InProgress"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: kube-events
@@ -914,6 +932,9 @@ resourceGroups:
       errorContainsAny:
       - "500 Internal Server Error"
       - "Internal error occurred"
+      # Transient AKS API server connection loss (no HTTP status, 5xx patterns miss). AROSLSRE-2130.
+      - "client connection lost"
+      - "unexpected error when reading response body"
       maximumRetryCount: 3
       durationBetweenRetries: 1m
   - name: mirror-exporter-image
@@ -940,6 +961,12 @@ resourceGroups:
       - "unknown_storage_failure"
       - "unexpected EOF"
       - "unauthorized: authentication required"
+      # Transient ACR pull/push failures during image mirroring (docker registry RegistryErrorResponse, "Please retry later").
+      - "RegistryErrorResponse"
+      - "Please retry later"
+      # Network-level failure reaching the registry (no registry response to match). AROSLSRE-2070.
+      - "connection refused"
+      - "i/o timeout"
       maximumRetryCount: 5
       durationBetweenRetries: 1m
   - name: exporter-output
@@ -953,8 +980,8 @@ resourceGroups:
       step: upgrade-aks-cluster
   - name: exporter-permissions
     action: ARM
-    template: templates/exporter-permissions.bicep
-    parameters: configurations/exporter-permissions.tmpl.bicepparam
+    template: templates/svc-exporter-permissions.bicep
+    parameters: configurations/svc-exporter-permissions.tmpl.bicepparam
     deploymentLevel: Subscription
     variables:
     - name: exporterPrincipalId
@@ -962,9 +989,16 @@ resourceGroups:
         resourceGroup: service
         step: exporter-output
         name: exporterPrincipalId
+    - name: serviceKeyVaultSubscription
+      input:
+        resourceGroup: svcKV
+        step: output
+        name: subscriptionId
     dependsOn:
     - resourceGroup: service
       step: exporter-output
+    - resourceGroup: service
+      step: infra
   - name: aro-hcp-exporter
     aksCluster: '{{ .svc.aks.name }}'
     action: Helm

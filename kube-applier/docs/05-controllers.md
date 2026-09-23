@@ -39,10 +39,19 @@ The existing controllerutils path writes `Degraded` to a Cosmos
 Add a small helper, `kube-applier/pkg/controllers/conditions/conditions.go`:
 
 ```go
+// ApplyDesire Type=ServerSideApply: sets SuccessfullyApplied (+ legacy Successful).
+func SetSuccessfullyApplied(conds *[]metav1.Condition, err error)
+// ApplyDesire Type=Delete: sets SuccessfullyDeleted (+ legacy Successful).
+func SetSuccessfullyDeleted(conds *[]metav1.Condition, err error)
+func SetWaitingForDeletion(conds *[]metav1.Condition, deletionTime metav1.Time, uid types.UID)
+// ReadDesire (single observe operation): sets the legacy Successful.
 func SetSuccessful(conds *[]metav1.Condition, err error)
-func SetSuccessfulWaitingForDeletion(conds *[]metav1.Condition, deletionTime metav1.Time, uid types.UID)
 func SetDegraded(conds *[]metav1.Condition, err error)
 ```
+
+The `SetSuccessfully*` / `SetWaitingForDeletion` helpers dual-write the
+operation-specific condition **and** the legacy `Successful` condition (same
+status/reason/message) so readers written against `Successful` keep working.
 
 Each helper:
 
@@ -104,10 +113,10 @@ Sync logic dispatches on `spec.type`:
 3. Server-side-apply with Force=true and FieldManager="kube-applier" via
    the dynamic client:
        dyn.Resource(gvr).Namespace(ns).Apply(ctx, name, obj, applyOpts)
-4. On success: SetSuccessful(conds, nil); SetDegraded(conds, nil).
-   On error:   SetSuccessful(conds, err); SetDegraded(conds, classifyAsDegraded(err)).
+4. On success: SetSuccessfullyApplied(conds, nil); SetDegraded(conds, nil).
+   On error:   SetSuccessfullyApplied(conds, err); SetDegraded(conds, classifyAsDegraded(err)).
    On a pre-check failure (malformed targetItem, malformed
-   kubeContent): SetSuccessful(conds, err with PreCheckFailed reason); SetDegraded(conds, nil).
+   kubeContent): SetSuccessfullyApplied(conds, err with PreCheckFailed reason); SetDegraded(conds, nil).
 5. Write status via statuswriter.
 ```
 
@@ -116,13 +125,13 @@ Sync logic dispatches on `spec.type`:
 ```
 1. Resolve the target resource from the ApplyDesire spec.
 2. Get the target object from the cluster:
-     not found             -> SetSuccessful(true)
-     has deletion timestamp -> SetSuccessfulWaitingForDeletion(
+     not found             -> SetSuccessfullyDeleted(true)
+     has deletion timestamp -> SetWaitingForDeletion(
                                deletionTimestamp, uid)
      no deletion timestamp -> issue Delete; if delete fails -> KubeAPIError
                                re-issue get:
-                                 still not found -> SetSuccessful(true)
-                                 has deletion timestamp -> SetSuccessfulWaitingForDeletion(
+                                 still not found -> SetSuccessfullyDeleted(true)
+                                 has deletion timestamp -> SetWaitingForDeletion(
                                                            deletionTimestamp, uid)
 3. Write status via statuswriter.
 ```
@@ -237,12 +246,17 @@ Run loop (per readme):
 - On each sync:
     1. Read the live object from the kube lister (may be nil if absent).
     2. Read the ReadDesire from the readDesireLister.
-    3. Marshal the live object to RawExtension. If absent, leave a sentinel
-       (e.g. RawExtension{Raw: nil}).
-    4. If new RawExtension differs from ReadDesire.Status.KubeContent
+    3. If the target is a core/v1 Secret, deep-copy and redact the object:
+       strip all data keys except known-safe ones (currently "tls.crt"),
+       remove all of binaryData and stringData, and strip unsafe annotations
+       (e.g. kubectl.kubernetes.io/last-applied-configuration). This prevents
+       private keys, passwords, and tokens from being persisted to Cosmos.
+    4. Marshal the (possibly redacted) live object to RawExtension.
+       If absent, leave a sentinel (e.g. RawExtension{Raw: nil}).
+    5. If new RawExtension differs from ReadDesire.Status.KubeContent
        (byte-equal compare), write the new status and SetSuccessful(true).
        Otherwise no-op.
-    5. On any kube error en route, SetSuccessful(false, "KubeAPIError"/"PreCheckFailed").
+    6. On any kube error en route, SetSuccessful(false, "KubeAPIError"/"PreCheckFailed").
 ```
 
 Stop behaviour: when the parent manager calls `cancel()`, the workqueue is

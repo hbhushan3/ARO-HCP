@@ -20,15 +20,71 @@ import (
 	"github.com/Azure/ARO-HCP/tooling/hcpctl/internal/tabular"
 )
 
+// L1 failure taxonomy categories.
+const (
+	L1AzureProblems      = "Azure Problems"
+	L1DeploymentFailures = "Deployment Failures"
+	L1ProductFailures    = "Product Failures"
+	L1TestReliability    = "Test Reliability"
+)
+
+// ValidL1Categories is the set of allowed L1 taxonomy values.
+var ValidL1Categories = map[string]bool{
+	L1AzureProblems:      true,
+	L1DeploymentFailures: true,
+	L1ProductFailures:    true,
+	L1TestReliability:    true,
+}
+
+// L2 subcategories, valid only when L1 is "Product Failures".
+const (
+	L2Frontend       = "Frontend"
+	L2ClusterService = "Cluster Service"
+	L2Backend        = "Backend"
+	L2Maestro        = "Maestro"
+	L2HyperShift     = "HyperShift"
+	L2RHUpstream     = "RH Upstream"
+)
+
+// ValidL2Subcategories is the set of allowed L2 taxonomy values.
+var ValidL2Subcategories = map[string]bool{
+	L2Frontend:       true,
+	L2ClusterService: true,
+	L2Backend:        true,
+	L2Maestro:        true,
+	L2HyperShift:     true,
+	L2RHUpstream:     true,
+}
+
+// Classification holds the taxonomy classification for an analysis.
+type Classification struct {
+	// L1Category is the top-level failure category.
+	L1Category string `json:"l1_category"`
+
+	// L2Subcategory is the component-level subcategory, required only
+	// when L1Category is "Product Failures".
+	L2Subcategory string `json:"l2_subcategory,omitempty"`
+
+	// Confidence is a score from 0 to 1 indicating how certain the
+	// model is about this classification.
+	Confidence float64 `json:"confidence"`
+}
+
 // DraftChain is the structured output the agent must produce as its final message.
 // This is the pre-hydration format — KQL queries have no share URIs or result tables yet.
 type DraftChain struct {
-	RootCause   string          `json:"root_cause"`
-	Summary     string          `json:"summary"`
-	Notes       string          `json:"notes,omitempty"`
-	Discovery   []DiscoveryItem `json:"discovery,omitempty"`
-	Chain       []ChainLink     `json:"chain"`
-	Suggestions []string        `json:"suggestions,omitempty"`
+	// Title is a short, human-readable headline for the analysis. It is
+	// model-authored and required in intent mode (used as the rendered document
+	// heading); in test mode it is optional and falls back to the test name.
+	Title string `json:"title,omitempty"`
+
+	RootCause      string          `json:"root_cause"`
+	Summary        string          `json:"summary"`
+	Notes          string          `json:"notes,omitempty"`
+	Classification *Classification `json:"classification,omitempty"`
+	Discovery      []DiscoveryItem `json:"discovery,omitempty"`
+	Chain          []ChainLink     `json:"chain"`
+	Suggestions    []string        `json:"suggestions,omitempty"`
 }
 
 // DiscoveryItem is an agent-authored KQL query with a label, used to establish
@@ -44,8 +100,9 @@ type DiscoveryItem struct {
 }
 
 // ChainLink is one link in the causal why-chain. Each link poses a "why?"
-// question and provides an answer backed by proof. The first link's question
-// is always "Why did this test fail?"; subsequent questions follow naturally
+// question and provides an answer backed by proof. In test mode the first
+// link's question is always "Why did this test fail?"; in intent mode it
+// restates the investigation objective. Subsequent questions follow naturally
 // from the previous answer.
 type ChainLink struct {
 	Question string      `json:"question"`
@@ -74,12 +131,21 @@ type ProofItem struct {
 
 // HydratedChain extends DraftChain with query results and share URIs.
 type HydratedChain struct {
-	RootCause   string              `json:"root_cause"`
-	Summary     string              `json:"summary"`
-	Notes       string              `json:"notes,omitempty"`
-	Discovery   []HydratedDiscovery `json:"discovery,omitempty"`
-	Chain       []HydratedLink      `json:"chain"`
-	Suggestions []string            `json:"suggestions,omitempty"`
+	// Title is the model-authored headline (see DraftChain.Title).
+	Title string `json:"title,omitempty"`
+
+	// Intent is the human-written investigation objective, echoed from the
+	// analysis input. It is set programmatically (not model-authored) and is
+	// empty in test mode.
+	Intent string `json:"intent,omitempty"`
+
+	RootCause      string              `json:"root_cause"`
+	Summary        string              `json:"summary"`
+	Notes          string              `json:"notes,omitempty"`
+	Classification *Classification     `json:"classification,omitempty"`
+	Discovery      []HydratedDiscovery `json:"discovery,omitempty"`
+	Chain          []HydratedLink      `json:"chain"`
+	Suggestions    []string            `json:"suggestions,omitempty"`
 }
 
 // HydratedDiscovery is a single leaf query directory from a discovery path,

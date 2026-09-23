@@ -39,12 +39,17 @@ import (
 
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/amwscaling"
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/base"
+	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/capacityreporting"
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/clustersserviceregistration"
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/datadump"
+	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/hcpresourcerequirements"
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/lifecycle"
 	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/maestroregistration"
-	"github.com/Azure/ARO-HCP/internal/database"
-	"github.com/Azure/ARO-HCP/internal/database/informers"
+	"github.com/Azure/ARO-HCP/fleet/pkg/controllers/sharedingress"
+	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/fleetcosmosstorage"
+	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/kubeappliercosmosstorage"
+	"github.com/Azure/ARO-HCP/internal/database/informers/fleetinformers"
+	unionkubeapplierinformers "github.com/Azure/ARO-HCP/internal/database/unioninformers/kubeapplier"
 	sharedleaderelection "github.com/Azure/ARO-HCP/internal/leaderelection"
 	"github.com/Azure/ARO-HCP/internal/ocm"
 	"github.com/Azure/ARO-HCP/internal/utils"
@@ -61,13 +66,14 @@ const (
 // Manager is the fleet controller manager. It runs informers, leader election,
 // and the fleet controllers.
 type Manager struct {
-	FleetDBClient                database.FleetDBClient
+	FleetDBClient                fleetcosmosstorage.FleetDBClient
 	ClustersServiceClient        ocm.ClusterServiceClientSpec
 	MaestroConsumerClientFactory maestroregistration.MaestroConsumerClientFactory
 	LeaderElectionLock           resourcelock.Interface
 	Region                       string
 	HealthzListenAddr            string
 	MetricsListenAddr            string
+	KubeApplierDBClients         kubeappliercosmosstorage.KubeApplierDBClients
 	AMWWorkspaceResourceIDs      []string
 	AMWScalingPollInterval       time.Duration
 	AzureCredential              azcore.TokenCredential
@@ -162,8 +168,7 @@ func (m *Manager) runControllersUnderLeaderElection(
 ) error {
 	logger := utils.LoggerFromContext(ctx)
 
-	relistDuration := 10 * time.Second
-	fleetInformers := informers.NewFleetInformersWithRelistDuration(ctx, m.FleetDBClient.GlobalListers(), &relistDuration)
+	fleetInformers := fleetinformers.NewFleetInformers(ctx, m.FleetDBClient.GlobalListers(), m.FleetDBClient)
 
 	stampInformer, stampLister := fleetInformers.Stamps()
 	managementClusterInformer, managementClusterLister := fleetInformers.ManagementClusters()
@@ -201,6 +206,60 @@ func (m *Manager) runControllersUnderLeaderElection(
 		base.StampWatchingControllerConfig{CooldownPeriod: 4 * time.Minute},
 	)
 
+	unionKubeApplierInformersController := unionkubeapplierinformers.NewUnionKubeApplierInformersController(
+		managementClusterInformer,
+		managementClusterLister,
+		unionkubeapplierinformers.NewKubeApplierInformerFactory(m.KubeApplierDBClients, nil),
+	)
+	readDesireInformer, readDesireLister := unionKubeApplierInformersController.Union().ReadDesires()
+
+	ensureCapacityReadDesireController := capacityreporting.NewEnsureCapacityReadDesireController(
+		managementClusterInformer,
+		m.KubeApplierDBClients,
+		base.StampWatchingControllerConfig{CooldownPeriod: 5 * time.Minute},
+	)
+
+	capacityReportingController := capacityreporting.NewCapacityReportingController(
+		readDesireInformer,
+		managementClusterInformer,
+		m.FleetDBClient,
+		readDesireLister,
+		base.StampWatchingControllerConfig{CooldownPeriod: 5 * time.Minute},
+	)
+
+	ensureSharedIngressReadDesireController := sharedingress.NewEnsureSharedIngressReadDesireController(
+		managementClusterInformer,
+		m.KubeApplierDBClients,
+		readDesireLister,
+		base.StampWatchingControllerConfig{CooldownPeriod: 5 * time.Minute},
+	)
+
+	sharedIngressReportingController := sharedingress.NewSharedIngressReportingController(
+		readDesireInformer,
+		managementClusterInformer,
+		m.FleetDBClient,
+		readDesireLister,
+		managementClusterLister,
+		base.StampWatchingControllerConfig{CooldownPeriod: 5 * time.Minute},
+	)
+
+	scaleCeilingReportingController := capacityreporting.NewManagementClusterScaleCeilingReportingController(
+		managementClusterInformer,
+		m.FleetDBClient,
+		readDesireLister,
+		m.Region,
+		m.AzureCredential,
+		m.AzureClientOptions,
+		base.StampWatchingControllerConfig{CooldownPeriod: 10 * time.Minute},
+	)
+
+	hcpResourceRequirementsController := hcpresourcerequirements.NewController(
+		5*time.Minute,
+		m.FleetDBClient,
+		readDesireLister,
+		stampLister,
+	)
+
 	amwScalingController := amwscaling.NewController(
 		m.AMWScalingPollInterval,
 		m.AMWWorkspaceResourceIDs,
@@ -225,10 +284,17 @@ func (m *Manager) runControllersUnderLeaderElection(
 				}
 
 				logger.Info("informer caches synced; starting controllers")
+				go unionKubeApplierInformersController.Run(ctx, 2)
 				go csRegistrationController.Run(ctx, 4)
 				go maestroRegistrationController.Run(ctx, 4)
 				go lifecycleController.Run(ctx, 1)
 				go dataDumpController.Run(ctx, 1)
+				go ensureCapacityReadDesireController.Run(ctx, 1)
+				go capacityReportingController.Run(ctx, 1)
+				go ensureSharedIngressReadDesireController.Run(ctx, 1)
+				go sharedIngressReportingController.Run(ctx, 1)
+				go scaleCeilingReportingController.Run(ctx, 1)
+				go hcpResourceRequirementsController.Run(ctx)
 				go amwScalingController.Run(ctx)
 			},
 			OnStoppedLeading: func() {

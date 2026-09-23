@@ -16,12 +16,13 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	hcpsdk20240610preview "github.com/Azure/ARO-HCP/test/sdk/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
+	hcpsdk20240610preview "github.com/Azure/ARO-HCP/test/sdk/v20240610preview/resourcemanager/redhatopenshifthcp/armredhatopenshifthcp"
 	"github.com/Azure/ARO-HCP/test/util/framework"
 	"github.com/Azure/ARO-HCP/test/util/labels"
 	"github.com/Azure/ARO-HCP/test/util/verifiers"
@@ -33,6 +34,7 @@ var _ = Describe("HCP Nodepools GPU instances", func() {
 		labels.Critical,
 		labels.Positive,
 		labels.IntegrationOnly,
+		labels.MIContainers(1),
 		func(ctx context.Context) {
 			const (
 				customerClusterName = "cluster-gpu-np"
@@ -44,6 +46,9 @@ var _ = Describe("HCP Nodepools GPU instances", func() {
 
 			By("discovering an available GPU VM size")
 			gpuVMSize, err := tc.SelectVMSize(ctx, framework.GPUNodePoolVMSizeSelector())
+			if errors.Is(err, framework.ErrNoUsableVMSize) {
+				Skip(fmt.Sprintf("no GPU VM size available in %s: %v", tc.Location(), err))
+			}
 			Expect(err).NotTo(HaveOccurred(), "failed to discover a GPU VM size")
 
 			if tc.UsePooledIdentities() {
@@ -80,9 +85,9 @@ var _ = Describe("HCP Nodepools GPU instances", func() {
 			Expect(err).NotTo(HaveOccurred(), "failed to create HCP cluster for GPU nodepool test")
 
 			By("getting credentials and verifying cluster is viable")
-			adminRESTConfig, err := tc.GetAdminRESTConfigForHCPCluster20240610(
+			adminRESTConfig, err := tc.GetAdminRESTConfigForHCPCluster20260901(
 				ctx,
-				tc.Get20240610ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient(),
+				tc.Get20260901ClientFactoryOrDie(ctx).NewHcpOpenShiftClustersClient(),
 				*resourceGroup.Name,
 				customerClusterName,
 				framework.GetAdminRESTConfigTimeout,

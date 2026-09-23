@@ -7,7 +7,7 @@ BACKEND_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ARO_HCP_REVISION ?= $(shell git rev-parse HEAD)
 ARO_HCP_COMMIT_TIME ?= $(shell TZ=UTC git show -s --format=%cd --date=iso-strict-local ${ARO_HCP_REVISION})
 ARO_HCP_IMAGE_REGISTRY ?= ${ARO_HCP_IMAGE_ACR}.azurecr.io
-BACKEND_IMAGE_TAG ?= $(shell DETECT_DIRTY_GIT_WORKTREE=${DETECT_DIRTY_GIT_WORKTREE} DEPLOY_ENV=${DEPLOY_ENV} ../generate-tag.sh)
+BACKEND_IMAGE_TAG ?= $(or $(IMAGE_TAG),$(shell DETECT_DIRTY_GIT_WORKTREE=${DETECT_DIRTY_GIT_WORKTREE} DEPLOY_ENV=${DEPLOY_ENV} ../generate-tag.sh))
 BACKEND_GENERATED_IMAGE_REPOSITORY = $(shell DEPLOY_ENV=${DEPLOY_ENV} BASELINE_REPO=${BACKEND_IMAGE_REPOSITORY} ../generate-repo.sh)
 BACKEND_TAGGED_IMAGE ?= $(ARO_HCP_IMAGE_REGISTRY)/$(BACKEND_GENERATED_IMAGE_REPOSITORY):$(BACKEND_IMAGE_TAG)
 
@@ -85,7 +85,7 @@ record-override: $(YQ) $(ORAS)
 record-latest-override: $(YQ)
 	@../hack/record-latest-image-override.sh \
 		"$(ARO_HCP_IMAGE_ACR)" "$(ARO_HCP_IMAGE_REGISTRY)" \
-		"$(BACKEND_GENERATED_IMAGE_REPOSITORY)" "$(DEPLOY_ENV)" \
+		"$(BACKEND_IMAGE_REPOSITORY)" "$(DEPLOY_ENV)" \
 		"backend" "$(OVERRIDE_CONFIG_FILE)" "$(YQ)"
 .PHONY: record-latest-override
 

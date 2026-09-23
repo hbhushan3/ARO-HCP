@@ -25,7 +25,11 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
+	"k8s.io/apimachinery/pkg/util/sets"
+
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
+
+	"github.com/Azure/ARO-HCP/internal/validation"
 )
 
 // ErrNoUsableVMSize is returned by SelectVMSize when no VM size in the target
@@ -65,7 +69,8 @@ const (
 // VMSizeSelector describes the requirements a VM size must satisfy. SelectVMSize
 // tries Preferred entries in order first, then falls back to a deterministic
 // (sorted) pick among the remaining SKUs that match NamePattern and the
-// capability constraints.
+// capability constraints. A nil NamePattern disables the fallback, limiting
+// selection to the Preferred entries (preferred-only selection).
 type VMSizeSelector struct {
 	// Name identifies the selector in logs and errors, e.g. "default-worker".
 	Name string
@@ -73,6 +78,9 @@ type VMSizeSelector struct {
 	Preferred []string
 	// NamePattern, when set, restricts fallback discovery candidates to SKU
 	// names matching the pattern. It does not constrain Preferred entries.
+	// When nil, no fallback discovery is performed: selection is limited to the
+	// Preferred entries, and SelectVMSize returns ErrNoUsableVMSize if none of
+	// them are usable.
 	NamePattern *regexp.Regexp
 	// MinVCPUs, when > 0, requires the SKU to advertise at least this many vCPUs.
 	MinVCPUs int
@@ -88,6 +96,11 @@ type VMSizeSelector struct {
 	// EphemeralOSDiskSupported capability ("True"). SKUs without local/cache
 	// storage (e.g. Dsv5) do not support ephemeral OS disks and are excluded.
 	RequireEphemeralOSDisk bool
+	// IgnoreRPAllowlist, when true, skips filtering candidates against the
+	// ARO-HCP RP's node pool VM size allowlist. Use for selectors that create
+	// VMs directly via Azure Compute (e.g. jumpbox) rather than through the
+	// ARO-HCP RP.
+	IgnoreRPAllowlist bool
 }
 
 // SelectVMSize queries the Azure Resource SKUs API for the test location and
@@ -127,11 +140,16 @@ type vmSizeSelectionTrace struct {
 	// viaFallback is true when selection used the deterministic fallback rather
 	// than a preferred candidate.
 	viaFallback bool
+	// filteredByRPAllowlist counts SKUs that passed Azure-side checks but were
+	// excluded by the RP allowlist. Helps distinguish Azure restriction issues
+	// from allowlist gaps when debugging CI failures.
+	filteredByRPAllowlist int
 }
 
 type vmSizePreferredAttempt struct {
-	name   string
-	usable bool
+	name             string
+	usable           bool
+	notInRPAllowlist bool
 }
 
 // logVMSizeSelection writes a human-readable decision trace to the Ginkgo
@@ -139,11 +157,17 @@ type vmSizePreferredAttempt struct {
 func logVMSizeSelection(selector VMSizeSelector, location string, trace vmSizeSelectionTrace, selErr error) {
 	fmt.Fprintf(ginkgo.GinkgoWriter, "VM size selection for selector %q in %s:\n", selector.Name, location)
 	for _, attempt := range trace.preferredAttempts {
-		if attempt.usable {
+		switch {
+		case attempt.usable:
 			fmt.Fprintf(ginkgo.GinkgoWriter, "  preferred candidate %q: available/usable\n", attempt.name)
-		} else {
+		case attempt.notInRPAllowlist:
+			fmt.Fprintf(ginkgo.GinkgoWriter, "  preferred candidate %q: NOT in RP allowlist (skipping)\n", attempt.name)
+		default:
 			fmt.Fprintf(ginkgo.GinkgoWriter, "  preferred candidate %q: NOT available/usable in this subscription/region (skipping)\n", attempt.name)
 		}
+	}
+	if trace.filteredByRPAllowlist > 0 {
+		fmt.Fprintf(ginkgo.GinkgoWriter, "  %d SKU(s) passed Azure checks but excluded by RP allowlist\n", trace.filteredByRPAllowlist)
 	}
 	switch {
 	case selErr != nil:
@@ -205,9 +229,16 @@ func cloneResourceSKUSlice(skus []*armcompute.ResourceSKU) []*armcompute.Resourc
 	return append([]*armcompute.ResourceSKU(nil), skus...)
 }
 
-// selectVMSize is the pure selection logic over a list of Resource SKUs. It returns
+// selectVMSize is the selection logic over a list of Resource SKUs. It returns
 // the selected SKU together with a trace describing how the decision was reached.
 func selectVMSize(skus []*armcompute.ResourceSKU, location string, selector VMSizeSelector) (string, vmSizeSelectionTrace, error) {
+	var rpAllowlist sets.Set[string]
+	if !selector.IgnoreRPAllowlist {
+		rpAllowlist = validation.EnabledNodePoolAzureVMSizes()
+	}
+
+	var trace vmSizeSelectionTrace
+
 	usable := map[string]struct{}{}
 	for _, sku := range skus {
 		if sku == nil || sku.Name == nil {
@@ -216,16 +247,22 @@ func selectVMSize(skus []*armcompute.ResourceSKU, location string, selector VMSi
 		if !skuUsable(sku, location, selector) {
 			continue
 		}
+		if rpAllowlist != nil && !rpAllowlist.Has(*sku.Name) {
+			trace.filteredByRPAllowlist++
+			continue
+		}
 		usable[*sku.Name] = struct{}{}
 	}
-
-	var trace vmSizeSelectionTrace
 
 	// Preferred entries win when they survive restriction/capability filtering.
 	// Record every attempt (including misses) so the caller can log the path.
 	for _, name := range selector.Preferred {
 		_, ok := usable[name]
-		trace.preferredAttempts = append(trace.preferredAttempts, vmSizePreferredAttempt{name: name, usable: ok})
+		attempt := vmSizePreferredAttempt{name: name, usable: ok}
+		if !ok && rpAllowlist != nil && !rpAllowlist.Has(name) {
+			attempt.notInRPAllowlist = true
+		}
+		trace.preferredAttempts = append(trace.preferredAttempts, attempt)
 	}
 	for _, attempt := range trace.preferredAttempts {
 		if attempt.usable {
@@ -234,20 +271,24 @@ func selectVMSize(skus []*armcompute.ResourceSKU, location string, selector VMSi
 		}
 	}
 
-	// Deterministic fallback: sorted pick among matching usable SKUs.
-	fallback := make([]string, 0, len(usable))
-	for name := range usable {
-		if selector.NamePattern != nil && !selector.NamePattern.MatchString(name) {
-			continue
+	// Deterministic fallback: sorted pick among usable SKUs matching NamePattern.
+	// A nil NamePattern disables fallback discovery entirely, limiting selection
+	// to the Preferred entries.
+	if selector.NamePattern != nil {
+		fallback := make([]string, 0, len(usable))
+		for name := range usable {
+			if !selector.NamePattern.MatchString(name) {
+				continue
+			}
+			fallback = append(fallback, name)
 		}
-		fallback = append(fallback, name)
-	}
-	sort.Strings(fallback)
-	trace.fallbackCandidates = fallback
-	if len(fallback) > 0 {
-		trace.selected = fallback[0]
-		trace.viaFallback = true
-		return fallback[0], trace, nil
+		sort.Strings(fallback)
+		trace.fallbackCandidates = fallback
+		if len(fallback) > 0 {
+			trace.selected = fallback[0]
+			trace.viaFallback = true
+			return fallback[0], trace, nil
+		}
 	}
 
 	return "", trace, fmt.Errorf("selector %q matched no usable VM size in %s: %w", selector.Name, location, ErrNoUsableVMSize)
@@ -281,8 +322,10 @@ func skuUsable(sku *armcompute.ResourceSKU, location string, selector VMSizeSele
 			return false
 		}
 	}
-	if selector.RequireZones && len(availableZones(sku, location)) == 0 {
-		return false
+	if selector.RequireZones {
+		if _, available := zonesInLocation(sku, location); len(available) == 0 {
+			return false
+		}
 	}
 	if selector.RequireEphemeralOSDisk {
 		val, ok := skuCapabilityString(sku, capabilityEphemeralOSDiskSupported)
@@ -309,8 +352,16 @@ func skuAdvertisedInLocation(sku *armcompute.ResourceSKU, location string) bool 
 }
 
 // skuRestrictedInLocation reports whether the SKU is entirely unavailable in the
-// location, e.g. NotAvailableForSubscription or a Location-type restriction
-// covering the region.
+// location. This covers both a Location-type restriction (SKU banned from the
+// whole region, e.g. NotAvailableForSubscription) and the case where the SKU
+// advertises availability zones in the location but Zone-type restrictions
+// remove all of them.
+//
+// The second case is not merely theoretical: Azure commonly expresses a full
+// subscription/region ban as a Zone-type restriction listing every zone (reason
+// NotAvailableForSubscription) rather than a Location-type restriction. A SKU in
+// that state is effectively unusable in the region, so it must be filtered out
+// even for selectors that do not set RequireZones.
 func skuRestrictedInLocation(sku *armcompute.ResourceSKU, location string) bool {
 	for _, restriction := range sku.Restrictions {
 		if restriction == nil || restriction.Type == nil {
@@ -323,24 +374,40 @@ func skuRestrictedInLocation(sku *armcompute.ResourceSKU, location string) bool 
 			return true
 		}
 	}
+
+	// A zonal SKU whose every advertised zone is removed by Zone-type
+	// restrictions is unusable. Comparing the advertised count against the
+	// remaining zones lets us tell that apart from a genuinely non-zonal SKU
+	// (advertised == 0), which must not be treated as restricted. A restriction
+	// listing zones beyond those advertised (Azure sometimes lists zones the SKU
+	// does not even offer) still empties the available set.
+	advertised, available := zonesInLocation(sku, location)
+	if advertised > 0 && len(available) == 0 {
+		return true
+	}
+
 	return false
 }
 
-// availableZones returns the availability zones for the SKU in the location
-// minus any zones removed by Zone-type restrictions.
-func availableZones(sku *armcompute.ResourceSKU, location string) []string {
-	zones := map[string]struct{}{}
+// zonesInLocation returns, in a single pass, how many availability zones the SKU
+// advertises in the location and the sorted subset that remains usable after
+// Zone-type restrictions are applied. Returning both lets callers distinguish a
+// non-zonal SKU (advertised == 0) from a zonal SKU whose every zone is
+// restricted (advertised > 0, available empty).
+func zonesInLocation(sku *armcompute.ResourceSKU, location string) (advertised int, available []string) {
+	advertisedZones := sets.New[string]()
 	for _, info := range sku.LocationInfo {
 		if info == nil || info.Location == nil || !strings.EqualFold(*info.Location, location) {
 			continue
 		}
 		for _, zone := range info.Zones {
 			if zone != nil {
-				zones[*zone] = struct{}{}
+				advertisedZones.Insert(*zone)
 			}
 		}
 	}
 
+	restrictedZones := sets.New[string]()
 	for _, restriction := range sku.Restrictions {
 		if restriction == nil || restriction.Type == nil || *restriction.Type != armcompute.ResourceSKURestrictionsTypeZone {
 			continue
@@ -350,17 +417,12 @@ func availableZones(sku *armcompute.ResourceSKU, location string) []string {
 		}
 		for _, zone := range restriction.RestrictionInfo.Zones {
 			if zone != nil {
-				delete(zones, *zone)
+				restrictedZones.Insert(*zone)
 			}
 		}
 	}
 
-	remaining := make([]string, 0, len(zones))
-	for zone := range zones {
-		remaining = append(remaining, zone)
-	}
-	sort.Strings(remaining)
-	return remaining
+	return advertisedZones.Len(), sets.List(advertisedZones.Difference(restrictedZones))
 }
 
 func restrictionCoversLocation(restriction *armcompute.ResourceSKURestrictions, location string) bool {
@@ -454,10 +516,11 @@ func SmallWorkerVMSizeSelector() VMSizeSelector {
 // low. The [^p] exclusion prevents matching Arm64 variants.
 func JumpboxVMSizeSelector() VMSizeSelector {
 	return VMSizeSelector{
-		Name:        "jumpbox",
-		Preferred:   []string{JumpboxVMSize, "Standard_D2s_v4", "Standard_D2ds_v5", "Standard_D2lds_v6"},
-		NamePattern: regexp.MustCompile(`^Standard_D[2-4][^p]*s_v[3456]$`),
-		MinVCPUs:    2,
+		Name:              "jumpbox",
+		Preferred:         []string{JumpboxVMSize, "Standard_D2s_v4", "Standard_D2ds_v5", "Standard_D2lds_v6"},
+		NamePattern:       regexp.MustCompile(`^Standard_D[2-4][^p]*s_v[3456]$`),
+		MinVCPUs:          2,
+		IgnoreRPAllowlist: true,
 	}
 }
 
@@ -500,10 +563,12 @@ func ARM64NodePoolVMSizeSelector() VMSizeSelector {
 	}
 }
 
-// GPUNodePoolVMSizeSelector selects a GPU-capable worker SKU. The historical
-// GPU sizes are preferred; the fallback accepts any N-series SKU that advertises
-// a GPU. Callers should treat ErrNoUsableVMSize as a reason to Skip, since GPU
-// capacity is scarce and frequently restricted per subscription/region.
+// GPUNodePoolVMSizeSelector selects a GPU-capable worker SKU from a curated
+// Preferred list only. There is intentionally no name-pattern fallback: a broad
+// N-series pattern matches extremely expensive GPU HW (e.g. A100/A10 N-series),
+// so selection is restricted to the vetted Preferred SKUs. Callers should treat
+// ErrNoUsableVMSize as a reason to Skip, since GPU capacity is scarce and
+// frequently restricted per subscription/region.
 func GPUNodePoolVMSizeSelector() VMSizeSelector {
 	return VMSizeSelector{
 		Name: "gpu-worker",
@@ -512,8 +577,8 @@ func GPUNodePoolVMSizeSelector() VMSizeSelector {
 			"Standard_NC8as_T4_v3",
 			"Standard_NC16as_T4_v3",
 			"Standard_NC64as_T4_v3",
+			"Standard_NC6s_v3",
 		},
-		NamePattern: regexp.MustCompile(`^Standard_N`),
-		RequireGPU:  true,
+		RequireGPU: true,
 	}
 }

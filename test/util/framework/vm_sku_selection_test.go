@@ -163,9 +163,10 @@ func TestSelectVMSize(t *testing.T) {
 				makeSKU("Standard_D2s_v3", testLocation, withCapability(capabilityVCPUs, "2")),
 			},
 			selector: VMSizeSelector{
-				Name:        "default-worker",
-				NamePattern: dPattern,
-				MinVCPUs:    8,
+				Name:              "default-worker",
+				NamePattern:       dPattern,
+				MinVCPUs:          8,
+				IgnoreRPAllowlist: true,
 			},
 			wantErr: ErrNoUsableVMSize,
 		},
@@ -259,15 +260,15 @@ func TestSelectVMSize(t *testing.T) {
 			name: "RequireEphemeralOSDisk selects SKU with EphemeralOSDiskSupported=True",
 			skus: []*armcompute.ResourceSKU{
 				makeSKU("Standard_D8s_v5", testLocation, withCapability(capabilityVCPUs, "8")),
-				makeSKU("Standard_D8ds_v5", testLocation, withCapability(capabilityVCPUs, "8"), withCapability(capabilityEphemeralOSDiskSupported, "True")),
+				makeSKU("Standard_D8as_v4", testLocation, withCapability(capabilityVCPUs, "8"), withCapability(capabilityEphemeralOSDiskSupported, "True")),
 			},
 			selector: VMSizeSelector{
 				Name:                   "ephemeral",
-				Preferred:              []string{"Standard_D8s_v5", "Standard_D8ds_v5"},
+				Preferred:              []string{"Standard_D8s_v5", "Standard_D8as_v4"},
 				MinVCPUs:               8,
 				RequireEphemeralOSDisk: true,
 			},
-			want: "Standard_D8ds_v5",
+			want: "Standard_D8as_v4",
 		},
 		{
 			name: "RequireEphemeralOSDisk excludes all SKUs when none support ephemeral",
@@ -286,14 +287,112 @@ func TestSelectVMSize(t *testing.T) {
 			name: "RequireEphemeralOSDisk preferred ordering is preserved",
 			skus: []*armcompute.ResourceSKU{
 				makeSKU("Standard_D8s_v3", testLocation, withCapability(capabilityVCPUs, "8"), withCapability(capabilityEphemeralOSDiskSupported, "True")),
-				makeSKU("Standard_D8ds_v5", testLocation, withCapability(capabilityVCPUs, "8"), withCapability(capabilityEphemeralOSDiskSupported, "True")),
+				makeSKU("Standard_D8as_v4", testLocation, withCapability(capabilityVCPUs, "8"), withCapability(capabilityEphemeralOSDiskSupported, "True")),
 			},
 			selector: VMSizeSelector{
 				Name:                   "ephemeral",
-				Preferred:              []string{"Standard_D8s_v3", "Standard_D8ds_v5"},
+				Preferred:              []string{"Standard_D8s_v3", "Standard_D8as_v4"},
 				RequireEphemeralOSDisk: true,
 			},
 			want: "Standard_D8s_v3",
+		},
+		{
+			name: "SKU with all advertised zones restricted is excluded even without RequireZones",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_D8s_v3", testLocation,
+					withCapability(capabilityVCPUs, "8"),
+					withZones(testLocation, "1", "2", "3"),
+					withZoneRestriction(testLocation, "1", "2", "3"),
+				),
+			},
+			selector: VMSizeSelector{
+				Name:      "default-worker",
+				Preferred: []string{"Standard_D8s_v3"},
+				MinVCPUs:  8,
+			},
+			wantErr: ErrNoUsableVMSize,
+		},
+		{
+			name: "SKU with a surviving zone is usable when only some zones are restricted",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_D8s_v3", testLocation,
+					withCapability(capabilityVCPUs, "8"),
+					withZones(testLocation, "1", "2", "3"),
+					withZoneRestriction(testLocation, "1", "2"),
+				),
+			},
+			selector: VMSizeSelector{
+				Name:      "default-worker",
+				Preferred: []string{"Standard_D8s_v3"},
+				MinVCPUs:  8,
+			},
+			want: "Standard_D8s_v3",
+		},
+		{
+			name: "restriction listing more zones than advertised still excludes the SKU",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_NV12s_v3", testLocation,
+					withCapability(capabilityVCPUs, "12"),
+					withZones(testLocation, "2", "3"),
+					withZoneRestriction(testLocation, "1", "2", "3"),
+				),
+			},
+			selector: VMSizeSelector{
+				Name:              "gpu",
+				Preferred:         []string{"Standard_NV12s_v3"},
+				MinVCPUs:          8,
+				IgnoreRPAllowlist: true,
+			},
+			wantErr: ErrNoUsableVMSize,
+		},
+		{
+			name: "GPU selector has no fallback: non-preferred GPU SKUs are not selected",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_NC4as_T4_v3", testLocation, withCapability(capabilityGPUs, "1"), withLocationRestriction(testLocation)),
+				makeSKU("Standard_NC16ads_A10_v4", testLocation, withCapability(capabilityGPUs, "1")),
+				makeSKU("Standard_NC24ads_A100_v4", testLocation, withCapability(capabilityGPUs, "1")),
+			},
+			selector: GPUNodePoolVMSizeSelector(),
+			wantErr:  ErrNoUsableVMSize,
+		},
+		{
+			name: "nil NamePattern disables fallback (preferred-only)",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_D8s_v3", testLocation, withCapability(capabilityVCPUs, "8"), withLocationRestriction(testLocation)),
+				makeSKU("Standard_D8s_v4", testLocation, withCapability(capabilityVCPUs, "8")),
+			},
+			selector: VMSizeSelector{
+				Name:      "no-fallback",
+				Preferred: []string{"Standard_D8s_v3"},
+				MinVCPUs:  8,
+				// NamePattern intentionally nil: no fallback even though Standard_D8s_v4 is usable.
+			},
+			wantErr: ErrNoUsableVMSize,
+		},
+		{
+			name: "IgnoreRPAllowlist lets non-allowlisted preferred through",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_D2ds_v5", testLocation, withCapability(capabilityVCPUs, "2")),
+			},
+			selector: VMSizeSelector{
+				Name:              "jumpbox",
+				Preferred:         []string{"Standard_D2ds_v5"},
+				IgnoreRPAllowlist: true,
+			},
+			want: "Standard_D2ds_v5",
+		},
+		{
+			name: "all SKUs pass Azure checks but none in RP allowlist yields ErrNoUsableVMSize",
+			skus: []*armcompute.ResourceSKU{
+				makeSKU("Standard_NC16ads_A10_v4", testLocation, withCapability(capabilityGPUs, "1")),
+				makeSKU("Standard_NV6ads_A10_v5", testLocation, withCapability(capabilityGPUs, "1")),
+			},
+			selector: VMSizeSelector{
+				Name:        "gpu",
+				NamePattern: regexp.MustCompile(`^Standard_N`),
+				RequireGPU:  true,
+			},
+			wantErr: ErrNoUsableVMSize,
 		},
 	}
 
@@ -473,7 +572,7 @@ func TestEphemeralSelectorSelectsDifferentFamily(t *testing.T) {
 // entirely. Asserting that every Preferred entry also matches its own
 // NamePattern keeps the two lists in sync and prevents a non-allowlisted SKU
 // from being reintroduced via Preferred.
-func TestWorkerSelectorPreferredEntriesAreAllowlisted(t *testing.T) {
+func TestWorkerSelectorPreferredEntriesMatchNamePattern(t *testing.T) {
 	for _, sel := range productionWorkerSelectors() {
 		if sel.NamePattern == nil {
 			t.Fatalf("selector %q has no NamePattern; it is required as the allowlist boundary", sel.Name)
@@ -486,5 +585,74 @@ func TestWorkerSelectorPreferredEntriesAreAllowlisted(t *testing.T) {
 				t.Errorf("selector %q Preferred entry %q does not match its NamePattern %q; Preferred must stay within the RP allowlist", sel.Name, name, sel.NamePattern.String())
 			}
 		}
+	}
+}
+
+// TestSkuRestrictedInLocation covers the zone-aware restriction detection added
+// for zone-level SKU bans. Azure often expresses a full subscription/region ban
+// as a Zone-type restriction listing every zone rather than a Location-type
+// restriction, so a SKU whose every advertised zone is restricted must be
+// reported as restricted even though no Location-type restriction is present.
+func TestSkuRestrictedInLocation(t *testing.T) {
+	tests := []struct {
+		name string
+		sku  *armcompute.ResourceSKU
+		want bool
+	}{
+		{
+			name: "no restrictions is not restricted",
+			sku:  makeSKU("Standard_D8s_v3", testLocation, withZones(testLocation, "1", "2", "3")),
+			want: false,
+		},
+		{
+			name: "location-type restriction is restricted",
+			sku:  makeSKU("Standard_D8s_v3", testLocation, withLocationRestriction(testLocation)),
+			want: true,
+		},
+		{
+			name: "all advertised zones restricted is restricted",
+			sku: makeSKU("Standard_D8s_v3", testLocation,
+				withZones(testLocation, "1", "2", "3"),
+				withZoneRestriction(testLocation, "1", "2", "3"),
+			),
+			want: true,
+		},
+		{
+			name: "some zones restricted is not restricted",
+			sku: makeSKU("Standard_D8s_v3", testLocation,
+				withZones(testLocation, "1", "2", "3"),
+				withZoneRestriction(testLocation, "1", "2"),
+			),
+			want: false,
+		},
+		{
+			name: "restriction covering more zones than advertised is restricted",
+			sku: makeSKU("Standard_NV12s_v3", testLocation,
+				withZones(testLocation, "2", "3"),
+				withZoneRestriction(testLocation, "1", "2", "3"),
+			),
+			want: true,
+		},
+		{
+			name: "non-zonal SKU with no restrictions is not restricted",
+			sku:  makeSKU("Standard_D8s_v3", testLocation),
+			want: false,
+		},
+		{
+			name: "zone restriction for a different location is ignored",
+			sku: makeSKU("Standard_D8s_v3", testLocation,
+				withZones(testLocation, "1", "2", "3"),
+				withZoneRestriction("westeurope", "1", "2", "3"),
+			),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := skuRestrictedInLocation(tt.sku, testLocation); got != tt.want {
+				t.Fatalf("skuRestrictedInLocation = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -1,7 +1,10 @@
 prometheusRules:
-  rulesFolders: []
+  rulesFolders:
+  - ../frontend/alerts/frontend-path-latency-prometheusRule.yaml
+  - alerts/serviceMemoryResources-prometheusRule.yaml
   untestedRules:
   - alerts/kubernetesControlPlane-prometheusRule.yaml
+  prometheusOperatorVersion: e02554298cb62b5533f3407c8eacc664e80bc74b
   outputBicep: ../dev-infrastructure/modules/metrics/rules/generatedKustoOnlyServicePrometheusAlertingRules.bicep
   groupNamePrefix: "svc-"
   outputReplacements:
@@ -15,9 +18,3 @@ prometheusRules:
     to: 'job="controlplane-cluster-autoscaler"'
   - from: 'job="kube-controller-manager"'
     to: 'job="controlplane-kube-controller-manager"'
-  regexOutputReplacements:
-  # absent alerts don't work correctly because they aren't associated with a specific cluster
-  # The alert ends up firing with {{target.cluster}} in the title and correlation id instead of
-  # an actual cluster name
-  - from: 'absent\(up{job="(.+)"} == 1\)'
-    to: 'count by (cluster) (up{job="$1"} == 1) == 0'

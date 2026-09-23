@@ -2,15 +2,13 @@ image:
   registry: ""
   repository: ""
   digest: ""
-tracing:
-  address: ""
-  exporter: ""
 deployment:
   zoneCount: ""
 miseAppId: ""
 audit:
   adInstance: ""
   tenantId: ""
+  connectSocket: false
 armPolicy:
   label: ""
   authority: ""

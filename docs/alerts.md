@@ -59,7 +59,7 @@ spec:
         runbook_url: 'https://eng.ms/docs/.../troubleshooting/<service>-tsg.html'
 ```
 
-### Required fields
+#### Required fields
 
 | Field | Description |
 |---|---|
@@ -71,7 +71,7 @@ spec:
 | `annotations.runbook_url` | Link to the troubleshooting guide for this alert |
 | `for` | (Optional) How long the condition must hold before firing (e.g. `5m`, `10m`). Defaults to the group's evaluation interval. |
 
-### Severity mapping
+#### Severity mapping
 
 Severity follows the Azure Common Engineering Naming (CEN) standard so alerts route cleanly into Microsoft IcM. It is set independently of burn rate: burn rate decides *when* an alert fires, severity decides *who* is paged at what urgency.
 
@@ -84,7 +84,7 @@ Use the explicit `2` / `2.5` / `3` / `4` values (the severity label is the IcM S
 | `3` (or `warning`) | SEV 3 | Needs prompt investigation. |
 | `4` (or `info`) | SEV 4 | Can wait; no immediate action required. |
 
-### The `summary` annotation and IcM titles
+#### The `summary` annotation and IcM titles
 
 The `summary` annotation becomes the IcM incident title (prefixed with the cluster name). Keep it short and static -- avoid embedding `{{ $labels.X }}` template variables in `summary`.
 
@@ -92,7 +92,7 @@ The IcM title is rendered as: `<cluster>: <summary>`.
 
 Use `description` for dynamic detail with template variables. The `description` is also duplicated into an `info` annotation by the generator (Azure Monitor strips `description` from the alert context, so `info` preserves it for IcM).
 
-### CorrelationID behavior
+#### CorrelationID behavior
 
 The generator automatically sets a `correlationId` annotation on every alert unless the source rule already defines one:
 
@@ -106,7 +106,7 @@ This means that all firings of the same alert on the same cluster are grouped to
 
 This default is intentional: fine-grained correlation IDs (per-pod, per-queue, etc.) were found to cause excessive incident fragmentation. If you need to distinguish between instances in the incident, include the relevant labels in the `description` annotation where they are visible to the responder.
 
-#### Overriding the correlationId
+##### Overriding the correlationId
 
 If the default per-infra-cluster grouping is too coarse, you can set a custom `correlationId` annotation directly in the source `PrometheusRule` YAML. The generator will preserve it instead of applying the default.
 
@@ -121,7 +121,7 @@ annotations:
 
 Use this sparingly — only when distinct instances genuinely need independent incident tracking (e.g. different hosted clusters on the same management cluster).
 
-## 2. Write tests
+### 2. Write tests
 
 Every rule file must have a corresponding `_test.yaml` file in the same directory. The generator will refuse to process rule files without tests.
 
@@ -159,7 +159,7 @@ tests:
     exp_alerts: []
 ```
 
-## 3. Register the rule file
+### 3. Register the rule file
 
 Add your rule file to the appropriate configuration in `observability/`:
 
@@ -168,7 +168,10 @@ Add your rule file to the appropriate configuration in `observability/`:
 | `observability/alerts-sl-services.yaml` | Service and platform alerts (SL queue) | Most alerts go here |
 | `observability/alerts-sre-hcps.yaml` | HCP namespace alerts (SRE queue) | Alerts specific to hosted control planes |
 | `observability/alerts-rp-services.yaml` | Resource provider alerts (RP queue) | RP-specific alerts |
+| `observability/alerts-rp-hcps.yaml` | HCP namespace alerts (RP queue) | RP-specific alerts using HCP metrics |
 | `observability/alerts-msft-services.yaml` | MSFT-filtered alerts (MSFT queue) | Subset of alerts for MSFT environments (uses `includedAlertsByGroup`) |
+| `observability/alerts-dev-services.yaml` | Service alerts (DEV queue) | Alerts routed to the shared DEV queue |
+| `observability/alerts-dev-hcps.yaml` | HCP namespace alerts (DEV queue) | HCP alerts routed to the shared DEV queue |
 
 Edit the relevant YAML file and add your rule file path to `rulesFolders`:
 
@@ -181,8 +184,15 @@ prometheusRules:
 
 If your alert should also appear in the MSFT environment, add it to `observability/alerts-msft-services.yaml` under `includedAlertsByGroup`.
 
-## 4. Generate Bicep
+### 4. Verify Alerts
 
+If the metrics are already present in PROD, you can verify your alerts:
+
+* [Alert Verification Guide](./alert-verification.md)
+
+### 5. Generate Bicep & Run Tests
+
+The rules need to be converted from the `.yaml` representation and merged into `.bicep` files (located in [/dev-infrastructure/modules/metrics/rules](/dev-infrastructure/modules/metrics/rules)). Use the following command before committing — it will also run Prometheus rule tests via promtool:
 
 ```bash
 make -C observability/ alerts
@@ -255,3 +265,12 @@ cluster should exist but no metrics are flowing yet, so an absence alert can fir
 until all components are up. If this turns out to be a real problem in practice it will likely
 need a more comprehensive approach than adjusting this one metric -- other alerts may fire during
 bring-up too -- and we will only know once a few more management clusters have been stamped.
+
+## Merge gate
+
+Production alerts feed back into development through the **merge gate**, a CI check
+that blocks a PR when it touches a component with unresolved production alerts. If
+your merge is blocked, see
+[Unblocking a merge blocked by the merge gate](alerts/merge-gate.md) for how to
+declare a
+fix with an `Ameliorates-Alert:` commit trailer.

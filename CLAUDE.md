@@ -136,6 +136,10 @@ Incomplete list:
 
 The github.com/Azure/ARO-Tools repo is also a dependency and changes can be suggested for it.
 
+## Architectural Boundaries
+
+- **The frontend must never access kube-applier, `ReadDesireLister`, or management cluster APIs directly.** All management-cluster state needed by the frontend or admission code must be mirrored through `ServiceProviderCluster` by the backend. This architectural boundary prevents the frontend from having credentials or network access to management clusters. Concretely: the backend (which legitimately watches management clusters) observes the needed state and writes a distilled form onto the `ServiceProviderCluster` document in Cosmos; the frontend prefetches `ServiceProviderCluster` and admission reads it from the admission context — never from a live management-cluster client. For example, `admitClusterVersionID` validates a version change against `ServiceProviderCluster.Status.DesiredVersionChannels`, which the backend `ControlPlaneActiveVersions` controller mirrors from the observed HostedCluster. See `internal/admission/CLAUDE.md` for the full rule.
+
 ## Additional Build, Configuration and Deployment Info
 
 ### Go Workspace
@@ -253,13 +257,14 @@ Custom tools in `tooling/`:
 
 ## Cosmos Data Flow Documentation
 
-`docs/cosmos-data-flow.md` documents every Cosmos DB read and write performed by frontend endpoints and backend controllers. It must be kept in sync with the code.
+`docs/cosmos-data-flow.md` documents every controller, endpoint writes, external resource effects, and cluster/node-pool/external-auth lifecycles. Keep the reference and its Graphviz sources/PNGs in sync with the code.
 
 ### When to regenerate
-Regenerate `docs/cosmos-data-flow.md` (using the generation prompt at the bottom of that file) whenever a change touches:
+Regenerate `docs/cosmos-data-flow.md` (using [the generation prompt](docs/prompts/controller-data-flow.md)) whenever a change touches:
 - `frontend/pkg/frontend/` — any handler that writes to Cosmos
-- `backend/pkg/controllers/` — any controller that reads or writes Cosmos fields
-- `internal/api/types_*.go` — any struct field that is stored in Cosmos
+- Controller implementations or startup registration in backend, fleet, kube-applier, mgmt-agent, sessiongate, or shared informer management — including controllers without Cosmos writes
+- Azure/Cluster Service/Kubernetes effects, reconciliation gates, or resource lifecycle dependencies
+- `internal/api/` — any struct field that is stored in Cosmos
 - `internal/database/` — any change to CRUD operations or precondition logic
 
 ### Field-level writer annotations

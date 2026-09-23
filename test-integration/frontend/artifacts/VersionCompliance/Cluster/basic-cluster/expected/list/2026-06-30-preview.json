@@ -17,9 +17,21 @@
 		"clusterImageRegistry": {
 			"state": "Enabled"
 		},
+		"cryptoRestrictions": "None",
 		"etcd": {
 			"dataEncryption": {
-				"keyManagementMode": "PlatformManaged"
+				"customerManaged": {
+					"encryptionType": "KMS",
+					"kms": {
+						"activeKey": {
+							"name": "vc-encryption-key",
+							"version": "2024-12-01-preview"
+						},
+						"vaultName": "vc-key-vault",
+						"visibility": "Public"
+					}
+				},
+				"keyManagementMode": "CustomerManaged"
 			}
 		},
 		"ingress": {
@@ -40,9 +52,6 @@
 			"subnetId": "/subscriptions/6b690bec-0c16-4ecb-8f67-781caf40bba7/resourceGroups/bar/providers/Microsoft.Network/virtualNetworks/vnet/subnets/subnet"
 		},
 		"provisioningState": "Succeeded",
-		"status": {
-			"conditions": []
-		},
 		"version": {
 			"channelGroup": "stable",
 			"id": "4.20"

@@ -122,10 +122,10 @@ func buildDeployment(namespace, ksmImage, kubeconfigSecretName, kubeconfigKey st
 						WithResources(coreac.ResourceRequirements().
 							WithRequests(corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("32Mi"),
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
 							}).
 							WithLimits(corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
+								corev1.ResourceMemory: resource.MustParse("256Mi"),
 							})).
 						WithVolumeMounts(
 							coreac.VolumeMount().
@@ -213,9 +213,15 @@ func buildServiceMonitor(namespace string, ownerRef metav1.OwnerReference) (*uns
 					Interval: "30s",
 					MetricRelabelConfigs: []monitoringv1.RelabelConfig{
 						{
-							TargetLabel: "namespace",
+							TargetLabel: "hostedcontrolplane",
 							Replacement: ptr.To(namespace),
 							Action:      "replace",
+						},
+						{
+							SourceLabels: []monitoringv1.LabelName{"exported_namespace"},
+							TargetLabel:  "namespace",
+							Regex:        "(.+)",
+							Action:       "replace",
 						},
 					},
 				},

@@ -16,6 +16,7 @@ package internal
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -66,11 +67,37 @@ type Options struct {
 	outputBicep             string
 	includedAlerts          map[string][]string
 	namespaceFilters        map[string][]string
+	internalSubFilter       InternalSubscriptionFilterConfig
 	labelsToExtract         []string
 	ruleFiles               []alertingRuleFile
 	outputReplacements      []Replacements
 	regexOutputReplacements []RegexReplacements
 	groupNamePrefix         string
+	// preserveAggregationLabels are labels that must survive every aggregation
+	// in a rule's PromQL. Each aggregation is rewritten so these labels are
+	// present on the output vector (see preserveLabelInAggregations).
+	preserveAggregationLabels []string
+}
+
+// WithPreserveAggregationLabels configures the labels that must be preserved
+// through every aggregation when generating rules.
+func (o *Options) WithPreserveAggregationLabels(labels []string) *Options {
+	o.preserveAggregationLabels = append([]string{}, labels...)
+	return o
+}
+
+// applyLabelPreservation rewrites the expression so that every configured
+// aggregation label survives to the output vector.
+func (o *Options) applyLabelPreservation(expr string) (string, error) {
+	result := expr
+	for _, label := range o.preserveAggregationLabels {
+		rewritten, err := preserveLabelInAggregations(result, label)
+		if err != nil {
+			return "", err
+		}
+		result = rewritten
+	}
+	return result, nil
 }
 
 type PrometheusRulesConfig struct {
@@ -86,8 +113,20 @@ type PrometheusRulesConfig struct {
 	GroupNamePrefix           string         `json:"groupNamePrefix,omitempty"`
 }
 
+// InternalSubscriptionFilterConfig configures post-expression filtering of
+// internal (e2e/dev/test) subscriptions. When enabled, alerts that carry the
+// label exclude_internal_subscriptions: "true" have their PromQL expression
+// wrapped with an `unless on(subscription_id) <Table>` clause. The recording
+// rule referenced by Table must exist in the Azure Monitor Workspace; if it
+// does not, the unless is a no-op (empty set excludes nothing).
+type InternalSubscriptionFilterConfig struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Table   string `json:"table,omitempty"`
+}
+
 type CliConfig struct {
-	PrometheusRules PrometheusRulesConfig `json:"prometheusRules"`
+	PrometheusRules            PrometheusRulesConfig            `json:"prometheusRules"`
+	InternalSubscriptionFilter InternalSubscriptionFilterConfig `json:"internalSubscriptionFilter,omitempty"`
 }
 
 func NewOptions() *Options {
@@ -158,6 +197,11 @@ func (o *Options) Complete(configFilePath string, promtoolPath string) error {
 	o.outputBicep = path.Join(baseDirectory, config.PrometheusRules.OutputBicep)
 	o.groupNamePrefix = config.PrometheusRules.GroupNamePrefix
 	o.labelsToExtract = append([]string{}, config.PrometheusRules.LabelsToExtract...)
+
+	o.internalSubFilter = config.InternalSubscriptionFilter
+	if o.internalSubFilter.Enabled && o.internalSubFilter.Table == "" {
+		return fmt.Errorf("internalSubscriptionFilter is enabled but no table (recording rule metric) is configured")
+	}
 
 	// Convert includedAlertsByGroup to a map
 	o.includedAlerts = make(map[string][]string)
@@ -387,37 +431,15 @@ func (o *Options) Generate() error {
 	isRecordingRulesFile := strings.Contains(o.outputBicep, "RecordingRules")
 	isAlertingRulesFile := strings.Contains(o.outputBicep, "AlertingRules")
 
-	// Validate that the filename contains the required keywords
-	if !isRecordingRulesFile && !isAlertingRulesFile {
-		return fmt.Errorf("output filename must contain either 'AlertingRules' or 'RecordingRules' to determine the rule type. Got: %s", o.outputBicep)
+	// Validate that the filename identifies exactly one rule type.
+	if isRecordingRulesFile == isAlertingRulesFile {
+		return fmt.Errorf("output filename must contain exactly one of 'AlertingRules' or 'RecordingRules' to determine the rule type. Got: %s", o.outputBicep)
 	}
 
-	// Write parameters based on file type
-	if isAlertingRulesFile {
-		if _, err := output.Write([]byte(`#disable-next-line no-unused-params
-param azureMonitoring string
-
-#disable-next-line no-unused-params
-param actionGroups array
-
-@description('The minimum IcM severity level (highest priority) that alerts can fire at. Alerts more critical than this ceiling will be degraded to this value. 0 means no ceiling.')
-param severityCeiling int = 0
-
-#disable-next-line no-unused-params
-param location string = resourceGroup().location
-`)); err != nil {
-			return err
-		}
-	} else {
-		if _, err := output.Write([]byte(`
-param azureMonitoring string
-
-param location string = resourceGroup().location
-`)); err != nil {
-			return err
-		}
-	}
-
+	generatedRules := &bytes.Buffer{}
+	replacementWriter := NewReplacementWriter(generatedRules, o.outputReplacements, o.regexOutputReplacements)
+	hasGeneratedRules := false
+	var titleErrors []error
 	for _, irf := range o.ruleFiles {
 		if irf.testDependency {
 			continue
@@ -479,6 +501,25 @@ param location string = resourceGroup().location
 					labels[k] = ptr.To(strings.ReplaceAll(v, "'", "\\'"))
 				}
 
+				// Check if this alert opts in to internal subscription filtering.
+				// The label is a build-time directive consumed by the generator;
+				// strip it so it does not appear in the deployed Azure Monitor rule.
+				//
+				// CONTRACT: alerts using this label MUST retain subscription_id in
+				// their output vector (via by(..., subscription_id, ...) or no
+				// aggregation). If a future alert aggregates subscription_id away,
+				// the unless clause silently becomes a no-op instead of filtering.
+				excludeInternalSubs := false
+				if val, exists := labels["exclude_internal_subscriptions"]; exists {
+					delete(labels, "exclude_internal_subscriptions")
+					switch ptr.Deref(val, "") {
+					case "true":
+						excludeInternalSubs = true
+					default:
+						return fmt.Errorf("alert %q has exclude_internal_subscriptions=%q; only \"true\" is valid", rule.Alert, ptr.Deref(val, ""))
+					}
+				}
+
 				annotations := map[string]*string{}
 				for k, v := range rule.Annotations {
 					annotations[k] = ptr.To(strings.ReplaceAll(v, "'", "\\'"))
@@ -497,17 +538,21 @@ param location string = resourceGroup().location
 				extractedLabels := o.labelsFromTextInConfiguredOrder(descriptionText)
 
 				// If the summary annotation is present, use it as the title.
-				// Append scoped labels based on `labelsToExtract`
 				// Otherwise, use the alert name as the title.
+				// All labels that are part of the correlation ID must be present
+				// in the title so that IcM incidents are distinguishable.
 				if summary, exists := annotations["summary"]; exists {
 					title := ptr.Deref(summary, "")
-					for _, label := range extractedLabels {
-						if strings.Contains(title, labelTemplateToken(label)) {
-							continue
-						}
-						title = title + " " + label + ":" + labelTemplateToken(label)
-					}
 					annotations["title"] = ptr.To(title)
+					var missing []string
+					for _, label := range extractedLabels {
+						if !strings.Contains(title, labelTemplateToken(label)) {
+							missing = append(missing, label)
+						}
+					}
+					if len(missing) > 0 {
+						titleErrors = append(titleErrors, fmt.Errorf("alert %q in group %q: summary is missing correlation label(s) %v; edit the summary annotation to include them concisely", rule.Alert, group.Name, missing))
+					}
 				} else {
 					annotations["title"] = ptr.To(rule.Alert)
 				}
@@ -545,9 +590,27 @@ param location string = resourceGroup().location
 						}
 						exprStr = normalized
 					}
+					preserved, err := o.applyLabelPreservation(exprStr)
+					if err != nil {
+						return fmt.Errorf("failed to preserve aggregation labels for alert %s in group %s: %w", rule.Alert, group.Name, err)
+					}
+					exprStr = preserved
+					if excludeInternalSubs && o.internalSubFilter.Enabled {
+						exprStr = fmt.Sprintf("(%s) unless on(subscription_id) %s", exprStr, o.internalSubFilter.Table)
+						normalized, parseErr := normalizeExpr(exprStr)
+						if parseErr != nil {
+							return fmt.Errorf("alert %q: internal subscription filter produced invalid PromQL: %w", rule.Alert, parseErr)
+						}
+						exprStr = normalized
+					} else if excludeInternalSubs && !o.internalSubFilter.Enabled {
+						return fmt.Errorf("alert %q has exclude_internal_subscriptions label but internalSubscriptionFilter is not enabled in the config", rule.Alert)
+					}
 					severity, err := severityFor(labels)
 					if err != nil {
 						return fmt.Errorf("alert %q: %w", rule.Alert, err)
+					}
+					if err := requireLabel(labels, "component", rule.Alert, group.Name); err != nil {
+						return err
 					}
 					armGroup.Properties.Rules = append(armGroup.Properties.Rules, &armprometheusrulegroups.PrometheusRule{
 						Alert:       ptr.To(rule.Alert),
@@ -575,6 +638,11 @@ param location string = resourceGroup().location
 						}
 						exprStr = normalized
 					}
+					preserved, err := o.applyLabelPreservation(exprStr)
+					if err != nil {
+						return fmt.Errorf("failed to preserve aggregation labels for record %s in group %s: %w", rule.Record, group.Name, err)
+					}
+					exprStr = preserved
 					armGroup.Properties.Rules = append(armGroup.Properties.Rules, &armprometheusrulegroups.PrometheusRule{
 						Record:     ptr.To(rule.Record),
 						Enabled:    ptr.To(true),
@@ -588,8 +656,6 @@ param location string = resourceGroup().location
 				// Use the file type to determine which function to call
 				// Groups are guaranteed to contain only one type of rule
 
-				replacementWriter := NewReplacementWriter(output, o.outputReplacements, o.regexOutputReplacements)
-
 				if isRecordingRulesFile {
 					if err := writeRecordingGroups(armGroup, replacementWriter); err != nil {
 						return err
@@ -599,10 +665,47 @@ param location string = resourceGroup().location
 						return err
 					}
 				}
+				hasGeneratedRules = true
 			}
 		}
 	}
-	return nil
+	if len(titleErrors) > 0 {
+		return errors.Join(titleErrors...)
+	}
+
+	// Write parameters based on file type. Empty alerting modules need to
+	// suppress severityCeiling because no generated rule references it.
+	if isAlertingRulesFile {
+		severityCeilingSuppression := ""
+		if !hasGeneratedRules {
+			severityCeilingSuppression = "#disable-next-line no-unused-params\n"
+		}
+		if _, err := fmt.Fprintf(output, `#disable-next-line no-unused-params
+param azureMonitoring string
+
+#disable-next-line no-unused-params
+param actionGroups array
+
+@description('The minimum IcM severity level (highest priority) that alerts can fire at. Alerts more critical than this ceiling will be degraded to this value. 0 means no ceiling.')
+%sparam severityCeiling int = 0
+
+#disable-next-line no-unused-params
+param location string = resourceGroup().location
+`, severityCeilingSuppression); err != nil {
+			return err
+		}
+	} else {
+		if _, err := output.Write([]byte(`
+param azureMonitoring string
+
+param location string = resourceGroup().location
+`)); err != nil {
+			return err
+		}
+	}
+
+	_, err = generatedRules.WriteTo(output)
+	return err
 }
 
 // A note on IcM: the connection between prometheusRuleGroups to IcM via actionGroups is tenuous. Keep the following
@@ -759,6 +862,14 @@ func parseToAzureDurationString(d *monitoringv1.Duration) *string {
 
 	// TODO: this is likely not precisely correct, but /shrug
 	return ptr.To("PT" + strings.ToUpper(parsedDuration.String()))
+}
+
+func requireLabel(labels map[string]*string, name, alert, group string) error {
+	v, ok := labels[name]
+	if !ok || v == nil || *v == "" {
+		return fmt.Errorf("alert %q in group %q: missing required %q label (set at group or rule level)", alert, group, name)
+	}
+	return nil
 }
 
 func severityFor(labels map[string]*string) (*int32, error) {

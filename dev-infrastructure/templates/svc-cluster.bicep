@@ -119,9 +119,6 @@ param podSubnetPrefix string
 @description('Kubernetes version to use with AKS')
 param kubernetesVersion string
 
-@description('Istio control plane versions to use with AKS. CSV format')
-param istioVersions string
-
 @description('The name of the keyvault for AKS.')
 @maxLength(24)
 param aksKeyVaultName string
@@ -411,8 +408,11 @@ param fleetNamespace string
 @description('The service account name of the Fleet managed identity')
 param fleetServiceAccountName string
 
-@description('The cluster tag value for the owning team')
+@description('Owning team tag value for alert rule routing')
 param owningTeamTagValue string
+
+@description('CSV of key=value tag pairs for the AKS cluster resource')
+param aksClusterTags string
 
 @description('CoscmosDB autoscaling parameters')
 param resourceContainerMaxScale int
@@ -635,6 +635,9 @@ module nodeSubnetCreation '../modules/network/aks-node-subnet.bicep' = {
   ]
 }
 
+// istioVersions intentionally omitted — mesh revisions are managed by the
+// IstioUpgrade pipeline step, not baked into the ARM template. Passing them
+// here would roll the mesh profile back on every deployment.
 module svcCluster '../modules/aks-cluster-base.bicep' = {
   name: 'cluster-${uniqueString(resourceGroup().name)}'
   scope: resourceGroup()
@@ -648,11 +651,11 @@ module svcCluster '../modules/aks-cluster-base.bicep' = {
     aksClusterOutboundIPAddressIPTags: aksClusterOutboundIPAddressIPTags
     kubernetesVersion: kubernetesVersion
     deployIstio: true
-    istioVersions: split(istioVersions, ',')
     vnetName: vnetName
     nodeSubnetId: nodeSubnetCreation.outputs.subnetId
     podSubnetPrefix: podSubnetPrefix
-    clusterType: 'svc-cluster'
+    aksClusterTags: aksClusterTags
+    owningTeamTagValue: owningTeamTagValue
     userOsDiskSizeGB: userOsDiskSizeGB
     userAgentPoolName: userAgentPoolName
     userAgentMinCount: userAgentMinCount
@@ -693,7 +696,6 @@ module svcCluster '../modules/aks-cluster-base.bicep' = {
     enableSwiftV2Nodepools: false
     upgradeSettingsMaxSurge: aksUpgradeSettingsMaxSurge
     upgradeSettingsMaxUnavailable: aksUpgradeSettingsMaxUnavailable
-    owningTeamTagValue: owningTeamTagValue
     aksClusterUserDefinedManagedIdentityName: aksClusterUserDefinedManagedIdentity.name
   }
   dependsOn: [
@@ -767,6 +769,7 @@ module rpCosmosDb '../modules/rp-cosmos.bicep' = if (rpCosmosDbAccountId != '') 
   params: {
     cosmosDBAccountName: rpCosmosDbName
     userAssignedMIs: [frontendMI, backendMI, adminApiMI, fleetMI]
+    csManagedIdentityPrincipalId: csManagedIdentityPrincipalId
     resourceContainerMaxScale: resourceContainerMaxScale
     billingContainerMaxScale: billingContainerMaxScale
     locksContainerMaxScale: locksContainerMaxScale

@@ -33,7 +33,7 @@ The current implementation is split across two layers:
   - `aro-hcp-tests slot-manager` manages Boskos sync/validation, acquire/release, and slot-managed identity-container provisioning.
 - **DEV bootstrap access**
   - `config/config-dev-ci.yaml` records the explicit DEV E2E customer subscriptions that receive shared bootstrap grants.
-  - `Microsoft.Azure.ARO.HCP.DevCI.E2ESubscriptionRBAC` reconciles the custom roles and shared-principal assignments for those subscriptions.
+  - The **Owner-only, on-demand** `Microsoft.Azure.ARO.HCP.DevCI.Privileged` entrypoint reconciles the custom roles and shared-principal assignments for those subscriptions. Because those are subscription-scoped role definitions and role assignments, it is run by an OWNERS-group member (`make dev-ci-privileged-local-run`) — it is deliberately kept out of the unattended `dev-ci` postsubmit. The non-privileged CI bot identities + Key Vault secrets are reconciled automatically by the `Microsoft.Azure.ARO.HCP.DevCI.Unprivileged` entrypoint.
 
 The bootstrap layer is about the shared dev identities used by the DEV services and by local E2E provisioning, not the per-cluster managed identities created for a specific HCP during a test run.
 
@@ -84,7 +84,7 @@ az provider show --namespace Microsoft.Compute \
      - Public IP Addresses: `3000`
      - Role Assignments: `8000`
    - `Microsoft.Compute` and `Microsoft.Network` must already report `Registered` (see Prerequisites) before the DSv3 and public-IP requests can be filed.
-   - Quota approvals are asynchronous and routed through Microsoft support, so file them early — they gate identity-container provisioning (step 5) and the Role Assignment limit asserted by the monitoring entry (step 6).
+   - Quota approvals are asynchronous and routed through Microsoft support, so file them early — they gate identity-container provisioning (step 5) and determine the Role Assignment limit reported by monitoring (step 6).
 
 3. Sync the ARO-HCP-managed Boskos inventory in `openshift/release`.
    - Run:
@@ -110,10 +110,10 @@ az provider show --namespace Microsoft.Compute \
 6. Extend the DEV bootstrap RBAC and quota-monitoring inventory.
    - Add the subscription name and ID to `config/config-dev-ci.yaml` under `ci.dev.e2eSubscriptions`.
    - That list now feeds the `dev-ci` RBAC parameter templates directly, so a brand-new subscription does not require extra per-index template edits.
-   - In the same `config/config-dev-ci.yaml`, also add the subscription to the `opstool.tenantQuota` tenant's `subscriptions` list so the `tenant-quota-collector` tracks it. Set `roleAssignmentLimit: 8000` and list the same `regions` the pool runs in, matching the Role Assignment quota requested in step 2.
+   - In the same `config/config-dev-ci.yaml`, also add the subscription to the `opstool.tenantQuota` tenant's `subscriptions` list so the `tenant-quota-collector` tracks it. List the same `regions` the pool runs in; the collector retrieves the Role Assignment quota limit directly from Azure.
    - In a normal onboarding flow, `homeSubscription`, `sharedPrincipals`, and `msiMockPool.principals` should not need to change.
-   - Run the rollout from the repo root:
-     - `make dev-ci-e2e-subscription-rbac-local-run`
+   - Apply the **privileged** customer-subscription grants (custom roles + shared-principal role assignments on the new subscription). This requires **Owner** on the target subscription, so it is **not** run by the `dev-ci` postsubmit — ask an OWNERS-group member to run it from the repo root:
+     - `make dev-ci-privileged-local-run`
 
 7. Validate the end-to-end path.
    - Confirm `slot-manager acquire` can resolve the new pool using the updated cluster profile inventory.
@@ -139,7 +139,8 @@ Those steps only become necessary if the shared identities or the Boskos-backed 
 - `test/cmd/aro-hcp-tests/slot-manager/identity-pool/`
 - `config/config-dev-ci.yaml`
 - `dev-infrastructure/dev-ci/e2e-subscription-rbac/pipeline.yaml`
-- `dev-infrastructure/configurations/e2e-subscription-rbac-assignments.tmpl.bicepparam`
+- `dev-infrastructure/dev-ci/e2e-subscription-rbac-grants/pipeline.yaml`
+- `dev-infrastructure/configurations/mock-identity-rbac.tmpl.bicepparam`
 - [Dev-CI Topology](dev-ci-topology.md)
 - [CI Identity Leasing](identity-leasing.md)
 
@@ -218,7 +219,7 @@ AFEC registration is a two-step process: first initiate the registration from th
 
 1. Add the subscription to `config/config-dev-ci.yaml` under the appropriate `ci.<env>.e2eSubscriptions` section.
 
-2. Run the `Microsoft.Azure.ARO.HCP.DevCI.E2ESubscriptionRBAC` pipeline to grant the environment's CI bot (e.g. `OpenShift Release Bot - STG`) the required RBAC on the new subscription.
+2. Run the `Microsoft.Azure.ARO.HCP.DevCI.Privileged` entrypoint to grant the environment's CI bot (e.g. `OpenShift Release Bot - STG`) the required RBAC on the new subscription (`make dev-ci-privileged-local-run`). This creates subscription-scoped role assignments and therefore requires **Owner** on the target subscription — run it on demand via an OWNERS-group member, not the `dev-ci` postsubmit.
 
 3. Add the pool to `test/e2e-config/e2e-slots.yaml` under the environment's `pools` list.
 

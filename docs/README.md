@@ -106,9 +106,11 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
 - [CI Identity Leasing](ci/identity-leasing.md)
   - Managed identity container pool and MSI mock SP pool deep dive
   - Release-side lease contract, pool sizing, and troubleshooting
-- [CI Quota Monitoring](ci/quota-monitoring.md)
-  - How Azure quotas that constrain CI are monitored via `tenant-quota`
-  - Azure dashboard for real-time quota usage
+- [DEV CI Monitoring and Alert Response](ci/dev-ci-monitoring.md)
+  - Canonical Slack and PagerDuty runbook for DEV CI alerts
+  - Exporter checks, durable troubleshooting paths, routing maintenance, and validation
+- [Opstool CI Platform](ci/opstool.md)
+  - Standalone cluster architecture, rollout model, shared resource wiring, and workload patterns
 - [CI EV2 Integration](ci/ev2-integration.md)
   - How EV2 selects Prow jobs and authenticates through Gangway
   - Commit pinning, rollout metadata, and promotion gating
@@ -145,8 +147,6 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - How to bump service component image digests in RH and MSFT environments
 - [High Level HCP Creation Flow](ops/hcp-cluster-creation-flow.md)
   - Walkthrough of an HCP cluster creation process through all the service layers of ARO HCP
-- [Opstool Cluster Guide](ops/opstool-cluster-guide.md)
-  - Standalone cluster architecture, rollout model, shared resource wiring, and workload patterns for `opstool`
 - [Resource Creation Diagram](resource-creation.md)
   - Detailed diagram of the resource creation flow (frontend, backend, Cluster Service, Maestro)
   - Covers HCPOpenShiftCluster, NodePool, and ExternalAuth resource types
@@ -160,16 +160,26 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - Procedure for manually cleaning up clusters stuck on deletion
 - [Fix Maestro Stale Resource Bundle](ops/fix-maestro-stale-resource-bundle.md)
   - How to resolve Maestro resource bundle staleness issues
+- [Node Health](controllers/node-health.md)
+  - Fault detectors, health metadata and readiness-history evidence
+  - Observation only, with independent mitigation admission and rollout
+- [Node Mitigation](controllers/node-mitigation.md)
+  - Design for SWIFT eviction and guarded never-ready mitigation with shared safety budgets
+  - SWIFT pod eviction, gated never-ready AKS deletion, and durable budget/operation accounting
+- [Node Health and Mitigation Evidence](controllers/node-mitigation-evidence.md)
+  - Rationale, validation methodology and the access-controlled evidence record
 - [Node Rollout Pre-Merge Check](node-rollout-premerge-check.md)
   - Pre-merge check procedure to avoid unexpected node rollouts in production
-- [Tenant Quota Collector](../tooling/tenant-quota/README.md)
-  - Tool-local deployment, configuration, and troubleshooting reference for `tenant-quota`
-  - For CI relevance, see [CI Quota Monitoring](ci/quota-monitoring.md)
+- [DEV CI Telemetry Exporter (`tenant-quota`)](../tooling/tenant-quota/README.md)
+  - Tool-local runtime, deployment, credentials, and management reference
+  - For alert response and maintenance, see [DEV CI Monitoring and Alert Response](ci/dev-ci-monitoring.md)
 
 ### SOPs
 
 - [Renew the Prow Token](sops/renew-prow-token.md)
   - How to renew the `prow-token` used by EV2 to trigger Prow E2E gating jobs
+- [Manually Trigger an E2E Gate Run](sops/manual-e2e-gate-run.md)
+  - Reproducing a failed EV2 `regionalGating` run in INT/STG, which have no rollout retry
 - [Dump Custom Resources](sops/dump-crs.md)
   - How to use `hcpctl mc dump-crs` to dump CRs for a HostedCluster
 - [Gather Logs](sops/gather-logs.md)
@@ -178,6 +188,8 @@ Welcome to the **ARO HCP** documentation. This guide provides an overview of the
   - Setting up first-party, MSI mock, and ARM helper credentials for MSIT INT
 - [Test Tenant Access](sops/test-test-tenant-access.md)
   - Requesting access to the Test Test ARO tenant used for E2E in Stage and Prod
+- [Grafana VPN Access](sops/grafana-vpn-access.md)
+  - Troubleshooting access to Grafana instances when public network access is restricted
 
 ### AI Agent Hints
 

@@ -15,11 +15,19 @@ TOPOLOGY_FILE ?= topology.yaml
 export AZURE_TOKEN_CREDENTIALS ?= dev
 BUILD_SERVICES_OPTS ?= -j7
 
+# Pin the Go toolchain to the version declared in go.work so make targets are
+# reproducible and match CI even on machines with a newer Go installed. With the
+# default GOTOOLCHAIN=auto, a newer local toolchain is used as-is (auto only
+# upgrades, never downgrades), which drifts test output (e.g. flate/gzip bytes,
+# encoding/json error text) from CI. Override with `make GOTOOLCHAIN=...` if needed.
+export GOTOOLCHAIN ?= $(shell awk '/^go /{print "go"$$2; exit}' go.work)
+
 .DEFAULT_GOAL := all
 
 # There is currently no convenient way to run commands against a whole Go workspace
 # https://github.com/golang/go/issues/50745
 MODULES := $(shell go list -f '{{.Dir}}/...' -m | xargs)
+TIDY_MODULES := $(MODULES) $(abspath image-sync/oc-mirror/acrauth)/...
 
 all: test lint
 .PHONY: all
@@ -75,7 +83,7 @@ verify-generate: generate
 
 deepcopy: $(DEEPCOPY_GEN) $(GOIMPORTS)
 	DEEPCOPY_GEN=$(DEEPCOPY_GEN) hack/update-deepcopy.sh
-	$(GOIMPORTS) -w -local github.com/Azure/ARO-HCP internal/api/zz_generated.deepcopy.go internal/api/arm/zz_generated.deepcopy.go internal/api/kubeapplier/zz_generated.deepcopy.go
+	$(GOIMPORTS) -w -local github.com/Azure/ARO-HCP internal/api/coreapi/zz_generated.deepcopy.go internal/api/metadataapi/zz_generated.deepcopy.go internal/api/fleetapi/zz_generated.deepcopy.go internal/api/kubeapplierapi/zz_generated.deepcopy.go
 	$(MAKE) all-tidy
 .PHONY: deepcopy
 
@@ -95,10 +103,22 @@ verify-kql:
 	hack/kql-verify.sh
 .PHONY: verify-kql
 
+verify-bicep-fixtures:
+	hack/verify-bicep-fixtures.sh
+.PHONY: verify-bicep-fixtures
+
+update-bicep-golden:
+	hack/generate-bicep-golden.sh
+.PHONY: update-bicep-golden
+
+verify-tool-versions:
+	$(MAKE) -C dev-infrastructure/openshift-ci verify
+.PHONY: verify-tool-versions
+
 update: deepcopy json-format
 .PHONY: update
 
-verify: verify-deepcopy verify-json-format verify-generate verify-yamlfmt verify-materialize verify-gomega-assertions verify-schema
+verify: verify-deepcopy verify-json-format verify-generate verify-yamlfmt verify-materialize verify-gomega-assertions verify-mi-containers verify-schema verify-bicep-fixtures verify-tool-versions
 .PHONY: verify
 
 verify-schema:
@@ -108,6 +128,10 @@ verify-schema:
 verify-gomega-assertions:
 	go run ./hack/verify-gomega-assertions ./test/e2e/ ./test/util/
 .PHONY: verify-gomega-assertions
+
+verify-mi-containers:
+	go run ./hack/verify-mi-containers ./test/e2e/
+.PHONY: verify-mi-containers
 
 verify-yamlfmt: yamlfmt
 	./hack/verify.sh yamlfmt
@@ -149,7 +173,7 @@ work-sync:
 	go work sync
 .PHONY: work-sync
 
-tidy: $(MODULES:/...=.tidy) work-sync
+tidy: $(TIDY_MODULES:/...=.tidy) work-sync
 
 %.tidy:
 	cd $(basename $@) && go mod tidy
@@ -203,7 +227,7 @@ e2e-local/run: $(ARO_HCP_TESTS)
 	export ADMIN_API_ADDRESS=$${ADMIN_API_ADDRESS:-http://localhost:8444}; \
 	export HCPCTL_BINARY="$$(pwd)/tooling/hcpctl/hcpctl"; \
 	mkdir -p "$$ARTIFACT_DIR"; \
-	$(ARO_HCP_TESTS) run-suite "rp-api-compat-all/parallel" --junit-path="$$JUNIT_PATH" --html-path="$$HTML_PATH" --max-concurrency 100
+	$(ARO_HCP_TESTS) run-suite "$${ARO_HCP_E2E_SUITE:-rp-api-compat-all/parallel}" --junit-path="$$JUNIT_PATH" --html-path="$$HTML_PATH" --max-concurrency 100
 .PHONY: e2e-local/run
 
 e2e-local/run-test:
@@ -278,10 +302,6 @@ infra.clean:
 	@cd dev-infrastructure && DEPLOY_ENV=$(DEPLOY_ENV) make clean
 .PHONY: infra.clean
 
-infra.tracing:
-	cd observability/tracing && KUBECONFIG="$$(cd ../../dev-infrastructure && make -s svc.aks.kubeconfigfile)" make
-.PHONY: infra.tracing
-
 infra.cosmos.access:
 	@cd dev-infrastructure && DEPLOY_ENV=$(DEPLOY_ENV) make cosmos.access
 .PHONY: infra.cosmos.access
@@ -329,8 +349,8 @@ services_all = $(join services_svc,services_mgmt)
 # Pipelines section
 # This sections is used to reference pipeline runs and should replace
 # the usage of `svc-deploy.sh` script in the future.
-services_svc_pipelines = backend frontend cluster-service maestro.server observability.tracing
-services_mgmt_pipelines = secret-sync-controller acm hypershiftoperator maestro.agent mgmt-agent observability.tracing
+services_svc_pipelines = backend frontend cluster-service maestro.server
+services_mgmt_pipelines = secret-sync-controller acm hypershiftoperator maestro.agent mgmt-agent swift-recorder
 %.deploy_pipeline: $(ORAS_LINK) $(YQ)
 	$(eval export dirname=$(subst .,/,$(basename $@)))
 	./templatize.sh $(DEPLOY_ENV) -p $(shell $(YQ) .serviceGroup ./$(dirname)/pipeline.yaml) -P run
@@ -353,6 +373,9 @@ rebase:
 validate-config-pipelines: $(YQ) $(TEMPLATIZE)
 	$(TEMPLATIZE) pipeline validate --topology-config-file topology.yaml --service-config-file "$(CONFIG_FILE)" --dev-mode --dev-region $(shell $(YQ) '.environments[] | select(.name == "dev") | .defaults.region' <tooling/templatize/settings.yaml) $(ONLY_CHANGED)
 
+validate-config-pipelines-dev-ci: $(YQ) $(TEMPLATIZE)
+	$(TEMPLATIZE) pipeline validate --topology-config-file topology-dev-ci.yaml --service-config-file config/config-dev-ci.yaml --dev-mode --dev-region $(shell $(YQ) '.environments[] | select(.name == "dev-ci") | .defaults.region' <tooling/templatize/settings.yaml)
+
 validate-changed-config-pipelines:
 	$(MAKE) validate-config-pipelines DEV_MODE="--dev-mode --dev-region uksouth" ONLY_CHANGED="--only-changed"
 
@@ -366,10 +389,12 @@ ARO-Tools:
 update-helm-fixtures:
 	find * -name 'zz_fixture_TestHelmTemplate*' | xargs rm -rf
 	$(MAKE) -C tooling/helmtest update
+	UPDATE=true $(MAKE) -C swift-recorder test-deploy
 .PHONY: update-helm-fixtures
 
 test-helm-fixtures:
 	$(MAKE) -C tooling/helmtest test
+	$(MAKE) -C swift-recorder test-deploy
 .PHONY: test-helmcharts
 
 verify-materialize:
@@ -390,8 +415,8 @@ generate-kiota:
 #
 PERS_OVERRIDE_FILE ?= /tmp/personal-dev-override.yaml
 
-build-services:
-	$(MAKE) $(BUILD_SERVICES_OPTS) build-frontend build-backend build-admin build-sessiongate build-mgmt-agent build-kube-applier build-fleet
+build-services: $(TEMPLATIZE)
+	$(MAKE) $(BUILD_SERVICES_OPTS) build-frontend build-backend build-admin build-sessiongate build-mgmt-agent build-swift-recorder build-kube-applier build-fleet build-aro-hcp-exporter
 .PHONY: build-services
 
 build-frontend:
@@ -414,6 +439,10 @@ build-mgmt-agent:
 	$(MAKE) -C mgmt-agent build-and-push
 .PHONY: build-mgmt-agent
 
+build-swift-recorder:
+	$(MAKE) -C swift-recorder build-and-push
+.PHONY: build-swift-recorder
+
 build-kube-applier:
 	$(MAKE) -C kube-applier build-and-push
 .PHONY: build-kube-applier
@@ -422,22 +451,30 @@ build-fleet:
 	$(MAKE) -C fleet build-and-push
 .PHONY: build-fleet
 
+build-aro-hcp-exporter:
+	$(MAKE) -C tooling/aro-hcp-exporter build-and-push
+.PHONY: build-aro-hcp-exporter
+
 record-services-override: $(YQ) $(ORAS)
 	$(MAKE) -C frontend record-override OVERRIDE_CONFIG_FILE=/tmp/_frontend-override.yaml
 	$(MAKE) -C backend record-override OVERRIDE_CONFIG_FILE=/tmp/_backend-override.yaml
 	$(MAKE) -C admin record-override OVERRIDE_CONFIG_FILE=/tmp/_admin-override.yaml
 	$(MAKE) -C sessiongate record-override OVERRIDE_CONFIG_FILE=/tmp/_sessiongate-override.yaml
 	$(MAKE) -C mgmt-agent record-override OVERRIDE_CONFIG_FILE=/tmp/_mgmt-agent-override.yaml
+	$(MAKE) -C swift-recorder record-override OVERRIDE_CONFIG_FILE=/tmp/_swift-recorder-override.yaml
 	$(MAKE) -C kube-applier record-override OVERRIDE_CONFIG_FILE=/tmp/_kube-applier-override.yaml
 	$(MAKE) -C fleet record-override OVERRIDE_CONFIG_FILE=/tmp/_fleet-override.yaml
+	$(MAKE) -C tooling/aro-hcp-exporter record-override OVERRIDE_CONFIG_FILE=/tmp/_aro-hcp-exporter-override.yaml
 	$(YQ) eval-all '. as $$item ireduce ({}; . * $$item)' \
 	  /tmp/_frontend-override.yaml \
 	  /tmp/_backend-override.yaml \
 	  /tmp/_admin-override.yaml \
 	  /tmp/_sessiongate-override.yaml \
 	  /tmp/_mgmt-agent-override.yaml \
+	  /tmp/_swift-recorder-override.yaml \
 	  /tmp/_kube-applier-override.yaml \
 	  /tmp/_fleet-override.yaml \
+	  /tmp/_aro-hcp-exporter-override.yaml \
 	  > $(PERS_OVERRIDE_FILE)
 .PHONY: record-services-override
 
@@ -452,6 +489,7 @@ latest-services-override: $(YQ)
 	$(MAKE) -C mgmt-agent record-latest-override OVERRIDE_CONFIG_FILE=/tmp/_mgmt-agent-override.yaml &
 	$(MAKE) -C kube-applier record-latest-override OVERRIDE_CONFIG_FILE=/tmp/_kube-applier-override.yaml &
 	$(MAKE) -C fleet record-latest-override OVERRIDE_CONFIG_FILE=/tmp/_fleet-override.yaml &
+	$(MAKE) -C tooling/aro-hcp-exporter record-latest-override OVERRIDE_CONFIG_FILE=/tmp/_aro-hcp-exporter-override.yaml &
 	wait
 	$(YQ) eval-all '. as $$item ireduce ({}; . * $$item)' \
 	  /tmp/_frontend-override.yaml \
@@ -461,6 +499,7 @@ latest-services-override: $(YQ)
 	  /tmp/_mgmt-agent-override.yaml \
 	  /tmp/_kube-applier-override.yaml \
 	  /tmp/_fleet-override.yaml \
+	  /tmp/_aro-hcp-exporter-override.yaml \
 	  > $(PERS_OVERRIDE_FILE)
 .PHONY: latest-services-override
 
@@ -470,11 +509,18 @@ latest-services-override: $(YQ)
 ifeq ($(DEPLOY_ENV),$(filter $(DEPLOY_ENV),pers swft))
 ifdef USE_LATEST_IMAGES
 personal-dev-env: latest-services-override install-tools
-else
-personal-dev-env: build-services record-services-override install-tools
-endif
 	$(MAKE) entrypoint/Region OVERRIDE_CONFIG_FILE=$(PERS_OVERRIDE_FILE)
-	$(MAKE) infra.svc.aks.kubeconfig infra.mgmt.aks.kubeconfig infra.tracing infra.cosmos.access
+	$(MAKE) infra.svc.aks.kubeconfig infra.mgmt.aks.kubeconfig infra.cosmos.access
+else
+personal-dev-env: install-tools
+	$(eval IMAGE_TAG := $(shell DETECT_DIRTY_GIT_WORKTREE=${DETECT_DIRTY_GIT_WORKTREE} DEPLOY_ENV=${DEPLOY_ENV} ./generate-tag.sh))
+	$(eval ARO_HCP_REVISION := $(shell git rev-parse HEAD))
+	$(eval export IMAGE_TAG ARO_HCP_REVISION)
+	$(MAKE) build-services
+	$(MAKE) record-services-override
+	$(MAKE) entrypoint/Region OVERRIDE_CONFIG_FILE=$(PERS_OVERRIDE_FILE)
+	$(MAKE) infra.svc.aks.kubeconfig infra.mgmt.aks.kubeconfig infra.cosmos.access
+endif
 else
 personal-dev-env:
 	$(error personal-dev-env: DEPLOY_ENV must be set to "pers" or "swft", not "$(DEPLOY_ENV)")
@@ -485,12 +531,16 @@ endif
 # Dev CI topology local run
 #
 dev-ci-local-run:
-	$(MAKE) local-run DEPLOY_ENV=dev-ci CONFIG_FILE=config/config-dev-ci.yaml TOPOLOGY_FILE=topology-dev-ci.yaml WHAT="--entrypoint Microsoft.Azure.ARO.HCP.DevCI.Infra" STEP_CACHE_DIR=""
+	$(MAKE) local-run DEPLOY_ENV=dev-ci CONFIG_FILE=config/config-dev-ci.yaml TOPOLOGY_FILE=topology-dev-ci.yaml WHAT="--entrypoint Microsoft.Azure.ARO.HCP.DevCI.Unprivileged" STEP_CACHE_DIR="" EXTRA_ARGS="--skip-bicepparam-validation"
 .PHONY: dev-ci-local-run
 
-dev-ci-e2e-subscription-rbac-local-run:
-	$(MAKE) local-run DEPLOY_ENV=dev-ci CONFIG_FILE=config/config-dev-ci.yaml TOPOLOGY_FILE=topology-dev-ci.yaml WHAT="--service-group Microsoft.Azure.ARO.HCP.DevCI.E2ESubscriptionRBAC" STEP_CACHE_DIR=""
-.PHONY: dev-ci-e2e-subscription-rbac-local-run
+# PRIVILEGED, on-demand only. Applies the subscription-scoped custom role
+# definitions and role assignments (requires Owner / User Access Administrator
+# on the target subscriptions). Not part of the dev-ci postsubmit; run by an
+# OWNERS-group member. See docs/ci/dev-ci-topology.md.
+dev-ci-privileged-local-run:
+	$(MAKE) local-run DEPLOY_ENV=dev-ci CONFIG_FILE=config/config-dev-ci.yaml TOPOLOGY_FILE=topology-dev-ci.yaml WHAT="--entrypoint Microsoft.Azure.ARO.HCP.DevCI.Privileged" STEP_CACHE_DIR="" EXTRA_ARGS="--skip-bicepparam-validation"
+.PHONY: dev-ci-privileged-local-run
 
 #
 # Local Cluster Service Development Environment
@@ -618,3 +668,8 @@ cleanup: $(TEMPLATIZE)
 image-updater:
 	@$(MAKE) -C tooling/image-updater update
 .PHONY: image-updater
+
+# Tool version bumper
+update-tool-versions:
+	@$(MAKE) -C dev-infrastructure/openshift-ci update-tool-versions
+.PHONY: update-tool-versions

@@ -16,10 +16,14 @@ package pipeline
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"
@@ -32,6 +36,7 @@ import (
 	"github.com/Azure/ARO-Tools/pipelines/types"
 
 	"github.com/Azure/ARO-HCP/tooling/templatize/bicep"
+	"github.com/Azure/ARO-HCP/tooling/templatize/pkg/junit"
 )
 
 func mustStamp(v string) graph.Stamp {
@@ -147,14 +152,16 @@ func TestMockedPipelineRun(t *testing.T) {
 		t.Fatalf("failed to start bicep language server: %v", err)
 	}
 
+	junitOutputFile := filepath.Join(t.TempDir(), "junit.xml")
 	if _, err := RunPipeline(&topology.Service{
 		ServiceGroup: "Microsoft.Azure.ARO.HCP.Test",
 	}, pipeline, logr.NewContext(t.Context(), testr.New(t)), &PipelineRunOptions{
 		BaseRunOptions: BaseRunOptions{
 			BicepClient: lspClient,
 		},
-		Environment: "test-env",
-		Stamp:       "1",
+		Environment:     "test-env",
+		Stamp:           "1",
+		JUnitOutputFile: junitOutputFile,
 		SubsciptionLookupFunc: func(_ context.Context, _ string) (string, error) {
 			return "test", nil
 		},
@@ -163,6 +170,19 @@ func TestMockedPipelineRun(t *testing.T) {
 		},
 	}, executor); err != nil {
 		t.Error(err)
+	}
+
+	report, err := os.ReadFile(junitOutputFile)
+	if err != nil {
+		t.Fatalf("failed to read JUnit report: %v", err)
+	}
+	var suites junit.TestSuites
+	if err := xml.Unmarshal(report, &suites); err != nil {
+		t.Fatalf("failed to decode JUnit report: %v", err)
+	}
+	if assert.Len(t, suites.Suites, 1) {
+		assert.Equal(t, "templatize-pipeline", suites.Suites[0].Name)
+		assert.Len(t, suites.Suites[0].TestCases, len(order))
 	}
 
 	lock.Lock()
@@ -1133,4 +1153,74 @@ func TestShouldExecuteStep(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+func TestStepContextTimeout(t *testing.T) {
+	t.Run("helm with timeout still uses default outer", func(t *testing.T) {
+		d, err := stepContextTimeout(&types.HelmStep{Timeout: "10m"})
+		assert.NoError(t, err)
+		assert.Equal(t, defaultStepContextTimeout, d)
+	})
+
+	t.Run("shell uses default outer", func(t *testing.T) {
+		d, err := stepContextTimeout(&types.ShellStep{Timeout: "10m"})
+		assert.NoError(t, err)
+		assert.Equal(t, defaultStepContextTimeout, d)
+	})
+
+	t.Run("istio upgrade 60m", func(t *testing.T) {
+		d, err := stepContextTimeout(&types.IstioUpgradeStep{Timeout: "60m"})
+		assert.NoError(t, err)
+		assert.Equal(t, 60*time.Minute, d)
+	})
+
+	t.Run("istio upgrade unset defaults to 30m", func(t *testing.T) {
+		d, err := stepContextTimeout(&types.IstioUpgradeStep{})
+		assert.NoError(t, err)
+		assert.Equal(t, defaultStepContextTimeout, d)
+	})
+
+	t.Run("invalid istio duration", func(t *testing.T) {
+		_, err := stepContextTimeout(&types.IstioUpgradeStep{Timeout: "not-a-duration"})
+		assert.Error(t, err)
+	})
+}
+
+func TestWaitForRetry(t *testing.T) {
+	t.Run("completes normally after duration", func(t *testing.T) {
+		ctx := context.Background()
+		duration := 20 * time.Millisecond
+
+		start := time.Now()
+		err := waitForRetry(ctx, duration)
+		elapsed := time.Since(start)
+
+		assert.NoError(t, err, "should return nil on normal timer completion")
+		assert.GreaterOrEqual(t, elapsed, duration, "should wait at least the configured duration")
+	})
+
+	t.Run("returns context cause on cancellation", func(t *testing.T) {
+		cause := fmt.Errorf("step timeout exceeded")
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+
+		start := time.Now()
+		err := waitForRetry(ctx, 1*time.Second)
+		elapsed := time.Since(start)
+
+		assert.Equal(t, cause, err, "should return the context cancellation cause")
+		assert.Less(t, elapsed, 100*time.Millisecond, "should cancel immediately without waiting for full duration")
+	})
+
+	t.Run("stops timer and returns error on context deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		err := waitForRetry(ctx, 1*time.Second)
+		elapsed := time.Since(start)
+
+		assert.NotNil(t, err, "should return an error on context deadline")
+		assert.Less(t, elapsed, 200*time.Millisecond, "should cancel without waiting for full duration")
+	})
 }

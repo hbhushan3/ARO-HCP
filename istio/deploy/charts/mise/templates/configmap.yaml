@@ -6,7 +6,6 @@ metadata:
 data:
   appsettings.json: |-
     {
-      "$schema": "https://identitydivision.visualstudio.com/DevEx/_git/MISE?path=/schemas/mise-options-schema.json",
       "MiseVersion": "2.0",
       "AllowedHosts": "*",
       "EnableInboundPolicyFilter": true,
@@ -15,6 +14,11 @@ data:
         "ClientId": "{{ .Values.miseAppId }}",
         "TenantId": "{{ .Values.audit.tenantId }}",
         "Audiences": ["api://{{ .Values.miseAppId }}"],
+        {{- if .Values.audit.connectSocket }}
+        "AuditOptions": {
+          "CustomConnectionString": "Endpoint=unix:/var/run/mdsd/default_fluent.socket"
+        },
+        {{- end }}
         "Logging": {
           "LogLevel": "Information"
         },

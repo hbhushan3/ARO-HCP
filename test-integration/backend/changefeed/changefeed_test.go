@@ -33,12 +33,14 @@ import (
 
 	azcorearm "github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 
-	backendinformers "github.com/Azure/ARO-HCP/backend/pkg/informers"
-	backendlisters "github.com/Azure/ARO-HCP/backend/pkg/listers"
-	"github.com/Azure/ARO-HCP/internal/api"
-	"github.com/Azure/ARO-HCP/internal/api/arm"
-	"github.com/Azure/ARO-HCP/internal/database"
-	dbinformers "github.com/Azure/ARO-HCP/internal/database/informers"
+	"github.com/Azure/ARO-HCP/internal/api/coreapi"
+	"github.com/Azure/ARO-HCP/internal/api/metadataapi"
+	"github.com/Azure/ARO-HCP/internal/apihelpers/metadataapihelpers"
+	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/corecosmosstorage"
+	"github.com/Azure/ARO-HCP/internal/database/cosmosstorage/cosmosstorageutils"
+	"github.com/Azure/ARO-HCP/internal/database/informers/coreinformers"
+	"github.com/Azure/ARO-HCP/internal/database/informers/informerutils"
+	"github.com/Azure/ARO-HCP/internal/database/listers/corelisters"
 	"github.com/Azure/ARO-HCP/internal/utils"
 	"github.com/Azure/ARO-HCP/test-integration/utils/integrationutils"
 )
@@ -60,16 +62,16 @@ const (
 	silenceDeadline = eventDeadline
 )
 
-type clusterChangeFeedWatcher = dbinformers.ChangeFeedWatcher[
-	api.HCPOpenShiftCluster,
-	*api.HCPOpenShiftCluster,
-	database.GenericDocument[api.HCPOpenShiftCluster],
+type clusterChangeFeedWatcher = informerutils.ChangeFeedWatcher[
+	coreapi.HCPOpenShiftCluster,
+	*coreapi.HCPOpenShiftCluster,
+	cosmosstorageutils.GenericDocument[coreapi.HCPOpenShiftCluster],
 ]
 
-type clusterChangeFeedListWatcher = dbinformers.ChangeFeedListWatcher[
-	api.HCPOpenShiftCluster,
-	*api.HCPOpenShiftCluster,
-	database.GenericDocument[api.HCPOpenShiftCluster],
+type clusterChangeFeedListWatcher = informerutils.ChangeFeedListWatcher[
+	coreapi.HCPOpenShiftCluster,
+	*coreapi.HCPOpenShiftCluster,
+	cosmosstorageutils.GenericDocument[coreapi.HCPOpenShiftCluster],
 ]
 
 // TestChangeFeedListWatcher exercises the change-feed-backed ListWatcher
@@ -155,28 +157,51 @@ func TestChangeFeedListWatcher(t *testing.T) {
 			},
 		},
 		{
-			name: "deleted item produces no watch event",
+			name: "soft-deleted item produces Deleted watch event",
 			run: func(t *testing.T, env *changefeedTestEnv) {
-				clusterRID := env.uniqueClusterResourceID("deleted")
+				clusterRID := env.uniqueClusterResourceID("soft-deleted")
 				env.createCluster(t, clusterRID)
 
 				_, watcher := env.startListAndWatch(t)
 
-				// Drain any straggling event the list captured (the
-				// cluster was created before the list, so it should
-				// already be in the resourceIDToInstanceVersion map
-				// — but the change feed may still surface it once;
-				// the watcher's instanceVersion gate should drop it).
-				// We give the change feed a short moment to do that
-				// before issuing the delete.
 				drainBriefly(watcher, 1*time.Second)
 
 				env.deleteCluster(t, clusterRID)
 
-				// The "latest version" change feed mode does not
-				// surface deletes. Wait the full event deadline; any
-				// delivered event is a failure of the contract.
-				assertNoEvent(t, watcher, silenceDeadline)
+				evt := waitForDeleteEvent(t, watcher, clusterRID.String(), eventDeadline)
+				gotResourceID, _ := metadataOf(t, evt.Object)
+				require.Truef(t, strings.EqualFold(gotResourceID, clusterRID.String()),
+					"event resourceID %q != deleted %q", gotResourceID, clusterRID.String())
+			},
+		},
+		{
+			name: "soft-deleted item not in list returns not-found on Get",
+			run: func(t *testing.T, env *changefeedTestEnv) {
+				clusterRID := env.uniqueClusterResourceID("get-after-delete")
+				env.createCluster(t, clusterRID)
+
+				env.deleteCluster(t, clusterRID)
+
+				_, err := env.resourcesDBClient.HCPClusters(clusterRID.SubscriptionID, clusterRID.ResourceGroupName).
+					Get(env.ctx, clusterRID.Name)
+				require.Truef(t, cosmosstorageutils.IsNotFoundError(err),
+					"expected not-found error after soft-delete, got: %v", err)
+			},
+		},
+		{
+			name: "relist after soft-delete does not include deleted item in list",
+			run: func(t *testing.T, env *changefeedTestEnv) {
+				clusterRID := env.uniqueClusterResourceID("relist-after-delete")
+				env.createCluster(t, clusterRID)
+
+				env.deleteCluster(t, clusterRID)
+
+				listed, _ := env.startListAndWatch(t)
+
+				for _, rid := range listed {
+					require.Falsef(t, strings.EqualFold(rid, clusterRID.String()),
+						"deleted cluster %q must not appear in the list", clusterRID.String())
+				}
 			},
 		},
 		{
@@ -199,7 +224,7 @@ func TestChangeFeedListWatcher(t *testing.T) {
 				// Now write a bunch of *other* resource types under the
 				// same subscription. None of these should surface on the
 				// cluster watcher, and none should panic the type filter
-				// or the deserialization path inside processDocument.
+				// or the deserialization path inside processItem.
 				nodePoolRID := env.uniqueNodePoolResourceID(clusterRID, "np-a")
 				createdNP := env.createNodePool(t, nodePoolRID)
 				env.replaceNodePool(t, createdNP)
@@ -318,7 +343,7 @@ type changefeedTestEnv struct {
 	cancel context.CancelFunc
 
 	storage           integrationutils.StorageIntegrationTestInfo
-	resourcesDBClient database.ResourcesDBClient
+	resourcesDBClient corecosmosstorage.ResourcesDBClient
 	listWatcher       *clusterChangeFeedListWatcher
 
 	listStarted bool
@@ -343,16 +368,17 @@ func newChangeFeedTestEnv(t *testing.T, withMock bool) *changefeedTestEnv {
 
 	resourcesDBClient := storage.ResourcesDBClient()
 
-	listWatcher := dbinformers.NewChangeFeedListWatcher[
-		api.HCPOpenShiftCluster,
-		*api.HCPOpenShiftCluster,
-		database.GenericDocument[api.HCPOpenShiftCluster],
+	listWatcher := informerutils.NewChangeFeedListWatcher[
+		coreapi.HCPOpenShiftCluster,
+		*coreapi.HCPOpenShiftCluster,
+		cosmosstorageutils.GenericDocument[coreapi.HCPOpenShiftCluster],
 	](
-		[]azcorearm.ResourceType{api.ClusterResourceType},
+		[]azcorearm.ResourceType{coreapi.ClusterResourceType},
 		utilsclock.RealClock{},
 		resourcesDBClient.ResourcesGlobalListers().Clusters(),
 		resourcesDBClient,
 		30*time.Minute,
+		"resources",
 	)
 
 	return &changefeedTestEnv{
@@ -383,7 +409,7 @@ func (e *changefeedTestEnv) cleanup() {
 func (e *changefeedTestEnv) uniqueClusterResourceID(name string) *azcorearm.ResourceID {
 	e.t.Helper()
 	clusterName := fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
-	return api.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+	return metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
 		"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/%s",
 		testSubscriptionID, testResourceGroup, clusterName)))
 }
@@ -407,7 +433,7 @@ func (e *changefeedTestEnv) startListAndWatch(t *testing.T) ([]string, *clusterC
 		if item.Object == nil {
 			continue
 		}
-		if cluster, ok := item.Object.(*api.HCPOpenShiftCluster); ok && cluster.ResourceID != nil {
+		if cluster, ok := item.Object.(*coreapi.HCPOpenShiftCluster); ok && cluster.ResourceID != nil {
 			listed = append(listed, strings.ToLower(cluster.ResourceID.String()))
 		}
 	}
@@ -423,7 +449,7 @@ func (e *changefeedTestEnv) startListAndWatch(t *testing.T) ([]string, *clusterC
 // createCluster creates a minimal cluster document via the production
 // CRUD layer. Returns the round-tripped object so the caller has the
 // authoritative InstanceVersion / CosmosETag.
-func (e *changefeedTestEnv) createCluster(t *testing.T, resourceID *azcorearm.ResourceID) *api.HCPOpenShiftCluster {
+func (e *changefeedTestEnv) createCluster(t *testing.T, resourceID *azcorearm.ResourceID) *coreapi.HCPOpenShiftCluster {
 	t.Helper()
 	cluster := newClusterFixture(resourceID)
 	created, err := e.resourcesDBClient.HCPClusters(resourceID.SubscriptionID, resourceID.ResourceGroupName).
@@ -434,13 +460,13 @@ func (e *changefeedTestEnv) createCluster(t *testing.T, resourceID *azcorearm.Re
 
 // replaceCluster does a conditional Replace using the existing
 // CosmosETag and returns the round-tripped object.
-func (e *changefeedTestEnv) replaceCluster(t *testing.T, existing *api.HCPOpenShiftCluster) *api.HCPOpenShiftCluster {
+func (e *changefeedTestEnv) replaceCluster(t *testing.T, existing *coreapi.HCPOpenShiftCluster) *coreapi.HCPOpenShiftCluster {
 	t.Helper()
 	updated := newClusterFixture(existing.ResourceID)
 	updated.CosmosETag = existing.CosmosETag
 	updated.InstanceVersion = existing.GetInstanceVersion()
 	// Touch a field so this is a real mutation.
-	updated.ServiceProviderProperties.ProvisioningState = arm.ProvisioningStateSucceeded
+	updated.ServiceProviderProperties.ProvisioningState = coreapi.ProvisioningStateSucceeded
 	replaced, err := e.resourcesDBClient.HCPClusters(existing.ResourceID.SubscriptionID, existing.ResourceID.ResourceGroupName).
 		Replace(e.ctx, updated, nil)
 	require.NoError(t, err, "Replace cluster")
@@ -452,7 +478,7 @@ func (e *changefeedTestEnv) replaceCluster(t *testing.T, existing *api.HCPOpenSh
 func (e *changefeedTestEnv) uniqueNodePoolResourceID(clusterRID *azcorearm.ResourceID, name string) *azcorearm.ResourceID {
 	e.t.Helper()
 	npName := fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
-	return api.Must(azcorearm.ParseResourceID(fmt.Sprintf("%s/nodePools/%s", clusterRID.String(), npName)))
+	return metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf("%s/nodePools/%s", clusterRID.String(), npName)))
 }
 
 // uniqueOperationResourceID returns an operation status resource ID
@@ -460,12 +486,12 @@ func (e *changefeedTestEnv) uniqueNodePoolResourceID(clusterRID *azcorearm.Resou
 func (e *changefeedTestEnv) uniqueOperationResourceID(name string) *azcorearm.ResourceID {
 	e.t.Helper()
 	opName := fmt.Sprintf("%s-%d", name, time.Now().UnixNano())
-	return api.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+	return metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
 		"/subscriptions/%s/providers/Microsoft.RedHatOpenShift/hcpOperationStatuses/%s",
 		testSubscriptionID, opName)))
 }
 
-func (e *changefeedTestEnv) createNodePool(t *testing.T, resourceID *azcorearm.ResourceID) *api.HCPOpenShiftClusterNodePool {
+func (e *changefeedTestEnv) createNodePool(t *testing.T, resourceID *azcorearm.ResourceID) *coreapi.HCPOpenShiftClusterNodePool {
 	t.Helper()
 	np := newNodePoolFixture(resourceID)
 	clusterName := resourceID.Parent.Name
@@ -475,7 +501,7 @@ func (e *changefeedTestEnv) createNodePool(t *testing.T, resourceID *azcorearm.R
 	return created
 }
 
-func (e *changefeedTestEnv) replaceNodePool(t *testing.T, existing *api.HCPOpenShiftClusterNodePool) *api.HCPOpenShiftClusterNodePool {
+func (e *changefeedTestEnv) replaceNodePool(t *testing.T, existing *coreapi.HCPOpenShiftClusterNodePool) *coreapi.HCPOpenShiftClusterNodePool {
 	t.Helper()
 	updated := newNodePoolFixture(existing.ResourceID)
 	updated.CosmosETag = existing.CosmosETag
@@ -488,7 +514,7 @@ func (e *changefeedTestEnv) replaceNodePool(t *testing.T, existing *api.HCPOpenS
 	return replaced
 }
 
-func (e *changefeedTestEnv) createOperation(t *testing.T, resourceID *azcorearm.ResourceID, externalID *azcorearm.ResourceID) *api.Operation {
+func (e *changefeedTestEnv) createOperation(t *testing.T, resourceID *azcorearm.ResourceID, externalID *azcorearm.ResourceID) *coreapi.Operation {
 	t.Helper()
 	op := newOperationFixture(resourceID, externalID)
 	created, err := e.resourcesDBClient.Operations(resourceID.SubscriptionID).Create(e.ctx, op, nil)
@@ -496,12 +522,12 @@ func (e *changefeedTestEnv) createOperation(t *testing.T, resourceID *azcorearm.
 	return created
 }
 
-func (e *changefeedTestEnv) replaceOperation(t *testing.T, existing *api.Operation) *api.Operation {
+func (e *changefeedTestEnv) replaceOperation(t *testing.T, existing *coreapi.Operation) *coreapi.Operation {
 	t.Helper()
 	updated := newOperationFixture(existing.ResourceID, existing.ExternalID)
 	updated.CosmosETag = existing.CosmosETag
 	updated.InstanceVersion = existing.GetInstanceVersion()
-	updated.Status = arm.ProvisioningStateProvisioning
+	updated.Status = coreapi.ProvisioningStateProvisioning
 	replaced, err := e.resourcesDBClient.Operations(existing.ResourceID.SubscriptionID).Replace(e.ctx, updated, nil)
 	require.NoError(t, err, "Replace operation")
 	return replaced
@@ -526,7 +552,7 @@ func (f *flooder) waitForStop() {
 	<-f.stopped
 }
 
-func (e *changefeedTestEnv) startFlooder(t *testing.T, ctx context.Context, initial *api.HCPOpenShiftCluster) *flooder {
+func (e *changefeedTestEnv) startFlooder(t *testing.T, ctx context.Context, initial *coreapi.HCPOpenShiftCluster) *flooder {
 	t.Helper()
 	f := &flooder{stopped: make(chan struct{})}
 	go func() {
@@ -540,9 +566,9 @@ func (e *changefeedTestEnv) startFlooder(t *testing.T, ctx context.Context, init
 			next.CosmosETag = current.CosmosETag
 			next.InstanceVersion = current.GetInstanceVersion()
 			// vary a field so it's a meaningful change
-			next.ServiceProviderProperties.ProvisioningState = arm.ProvisioningStateProvisioning
+			next.ServiceProviderProperties.ProvisioningState = coreapi.ProvisioningStateProvisioning
 			if int(f.updateCount.Load())%2 == 0 {
-				next.ServiceProviderProperties.ProvisioningState = arm.ProvisioningStateSucceeded
+				next.ServiceProviderProperties.ProvisioningState = coreapi.ProvisioningStateSucceeded
 			}
 			replaced, err := e.resourcesDBClient.HCPClusters(current.ResourceID.SubscriptionID, current.ResourceID.ResourceGroupName).
 				Replace(ctx, next, nil)
@@ -569,62 +595,62 @@ func (e *changefeedTestEnv) startFlooder(t *testing.T, ctx context.Context, init
 	return f
 }
 
-func newClusterFixture(resourceID *azcorearm.ResourceID) *api.HCPOpenShiftCluster {
-	return &api.HCPOpenShiftCluster{
-		CosmosMetadata: arm.CosmosMetadata{
+func newClusterFixture(resourceID *azcorearm.ResourceID) *coreapi.HCPOpenShiftCluster {
+	return &coreapi.HCPOpenShiftCluster{
+		CosmosMetadata: coreapi.CosmosMetadata{
 			ResourceID:   resourceID,
 			PartitionKey: strings.ToLower(resourceID.SubscriptionID),
 		},
-		TrackedResource: arm.TrackedResource{
-			Resource: arm.Resource{
+		TrackedResource: coreapi.TrackedResource{
+			Resource: coreapi.Resource{
 				ID:   resourceID,
 				Name: resourceID.Name,
-				Type: api.ClusterResourceType.String(),
+				Type: coreapi.ClusterResourceType.String(),
 			},
 			Location: "eastus",
 		},
-		ServiceProviderProperties: api.HCPOpenShiftClusterServiceProviderProperties{
-			ProvisioningState: arm.ProvisioningStateAccepted,
-			ClusterServiceID:  api.Ptr(api.Must(api.NewInternalID("/api/clusters_mgmt/v1/clusters/changefeed-test"))),
+		ServiceProviderProperties: coreapi.HCPOpenShiftClusterServiceProviderProperties{
+			ProvisioningState: coreapi.ProvisioningStateAccepted,
+			ClusterServiceID:  metadataapihelpers.Ptr(metadataapi.Must(metadataapi.NewInternalID("/api/clusters_mgmt/v1/clusters/changefeed-test"))),
 		},
 	}
 }
 
-func newNodePoolFixture(resourceID *azcorearm.ResourceID) *api.HCPOpenShiftClusterNodePool {
-	return &api.HCPOpenShiftClusterNodePool{
-		CosmosMetadata: arm.CosmosMetadata{
+func newNodePoolFixture(resourceID *azcorearm.ResourceID) *coreapi.HCPOpenShiftClusterNodePool {
+	return &coreapi.HCPOpenShiftClusterNodePool{
+		CosmosMetadata: coreapi.CosmosMetadata{
 			ResourceID:   resourceID,
 			PartitionKey: strings.ToLower(resourceID.SubscriptionID),
 		},
-		TrackedResource: arm.TrackedResource{
-			Resource: arm.Resource{
+		TrackedResource: coreapi.TrackedResource{
+			Resource: coreapi.Resource{
 				ID:   resourceID,
 				Name: resourceID.Name,
-				Type: api.NodePoolResourceType.String(),
+				Type: coreapi.NodePoolResourceType.String(),
 			},
 			Location: "eastus",
 		},
-		Properties: api.HCPOpenShiftClusterNodePoolProperties{
-			ProvisioningState: arm.ProvisioningStateAccepted,
+		Properties: coreapi.HCPOpenShiftClusterNodePoolProperties{
+			ProvisioningState: coreapi.ProvisioningStateAccepted,
 			Replicas:          3,
 		},
-		ServiceProviderProperties: api.HCPOpenShiftClusterNodePoolServiceProviderProperties{
-			ClusterServiceID: api.Ptr(api.Must(api.NewInternalID("/api/aro_hcp/v1alpha1/clusters/changefeed-test/node_pools/" + resourceID.Name))),
+		ServiceProviderProperties: coreapi.HCPOpenShiftClusterNodePoolServiceProviderProperties{
+			ClusterServiceID: metadataapihelpers.Ptr(metadataapi.Must(metadataapi.NewInternalID("/api/aro_hcp/v1alpha1/clusters/changefeed-test/node_pools/" + resourceID.Name))),
 		},
 	}
 }
 
-func newOperationFixture(resourceID *azcorearm.ResourceID, externalID *azcorearm.ResourceID) *api.Operation {
+func newOperationFixture(resourceID *azcorearm.ResourceID, externalID *azcorearm.ResourceID) *coreapi.Operation {
 	now := time.Now().UTC()
-	return &api.Operation{
-		CosmosMetadata: arm.CosmosMetadata{
+	return &coreapi.Operation{
+		CosmosMetadata: coreapi.CosmosMetadata{
 			ResourceID:   resourceID,
 			PartitionKey: strings.ToLower(resourceID.SubscriptionID),
 		},
 		OperationID:        resourceID,
 		ExternalID:         externalID,
-		Request:            api.OperationRequestCreate,
-		Status:             arm.ProvisioningStateAccepted,
+		Request:            coreapi.OperationRequestCreate,
+		Status:             coreapi.ProvisioningStateAccepted,
 		StartTime:          now,
 		LastTransitionTime: now,
 	}
@@ -635,11 +661,30 @@ func newOperationFixture(resourceID *azcorearm.ResourceID, externalID *azcorearm
 // (CosmosToInternal'd), so we can cast through CosmosMetadataAccessor.
 func metadataOf(t *testing.T, obj any) (string, int64) {
 	t.Helper()
-	accessor, ok := obj.(arm.CosmosMetadataAccessor)
+	accessor, ok := obj.(coreapi.CosmosMetadataAccessor)
 	require.Truef(t, ok, "event object %T does not implement CosmosMetadataAccessor", obj)
 	rid := accessor.GetResourceID()
 	require.NotNil(t, rid, "event object has nil ResourceID")
 	return rid.String(), accessor.GetInstanceVersion()
+}
+
+func waitForDeleteEvent(t *testing.T, watcher *clusterChangeFeedWatcher, resourceID string, timeout time.Duration) watch.Event {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case evt, ok := <-watcher.ResultChan():
+			require.True(t, ok, "watcher result channel closed before delivering a Deleted event")
+			if evt.Type == watch.Deleted {
+				rid, _ := metadataOf(t, evt.Object)
+				if strings.EqualFold(rid, resourceID) {
+					return evt
+				}
+			}
+		case <-deadline:
+			t.Fatalf("no Deleted event for %s received within %s", resourceID, timeout)
+		}
+	}
 }
 
 func waitForEvent(t *testing.T, watcher *clusterChangeFeedWatcher, timeout time.Duration) watch.Event {
@@ -742,24 +787,24 @@ func TestActiveOperationInformer(t *testing.T) {
 		// Build the active operation informer using the same constructor
 		// the backend uses — it wires WithShouldDeliverItemFn to filter
 		// out terminal operations.
-		activeOpInformer := backendinformers.NewActiveOperationInformerWithRelistDuration(
+		activeOpInformer := coreinformers.NewActiveOperationInformerWithRelistDuration(
 			resourcesDBClient.ResourcesGlobalListers().ActiveOperations(),
 			resourcesDBClient,
 			30*time.Minute,
 		)
-		activeOpLister := backendlisters.NewActiveOperationLister(activeOpInformer.GetIndexer())
+		activeOpLister := corelisters.NewActiveOperationLister(activeOpInformer.GetIndexer())
 
 		// Track events delivered by the informer.
 		events := make(chan watch.Event, 10)
 		_, err = activeOpInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				events <- watch.Event{Type: watch.Added, Object: obj.(*api.Operation)}
+				events <- watch.Event{Type: watch.Added, Object: obj.(*coreapi.Operation)}
 			},
 			UpdateFunc: func(_, obj interface{}) {
-				events <- watch.Event{Type: watch.Modified, Object: obj.(*api.Operation)}
+				events <- watch.Event{Type: watch.Modified, Object: obj.(*coreapi.Operation)}
 			},
 			DeleteFunc: func(obj interface{}) {
-				events <- watch.Event{Type: watch.Deleted, Object: obj.(*api.Operation)}
+				events <- watch.Event{Type: watch.Deleted, Object: obj.(*coreapi.Operation)}
 			},
 		})
 		require.NoError(t, err, "AddEventHandler")
@@ -780,10 +825,10 @@ func TestActiveOperationInformer(t *testing.T) {
 			"informer cache did not sync")
 
 		// Create an active (non-terminal) operation.
-		clusterRID := api.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+		clusterRID := metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
 			"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/active-op-test-%d",
 			testSubscriptionID, testResourceGroup, time.Now().UnixNano())))
-		opRID := api.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+		opRID := metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
 			"/subscriptions/%s/providers/Microsoft.RedHatOpenShift/hcpOperationStatuses/active-op-%d",
 			testSubscriptionID, time.Now().UnixNano())))
 		op := newOperationFixture(opRID, clusterRID)
@@ -793,10 +838,10 @@ func TestActiveOperationInformer(t *testing.T) {
 		// Wait for the Added event from the informer.
 		evt := waitForChannelEvent(t, events, eventDeadline)
 		require.Equal(t, watch.Added, evt.Type, "expected Added for new active operation")
-		addedOp := evt.Object.(*api.Operation)
+		addedOp := evt.Object.(*coreapi.Operation)
 		require.Truef(t, strings.EqualFold(addedOp.GetResourceID().String(), opRID.String()),
 			"Added event resourceID %q != created %q", addedOp.GetResourceID().String(), opRID.String())
-		require.Equal(t, arm.ProvisioningStateAccepted, addedOp.Status,
+		require.Equal(t, coreapi.ProvisioningStateAccepted, addedOp.Status,
 			"Added event must carry the non-terminal status")
 
 		// The lister must find the active operation.
@@ -809,7 +854,7 @@ func TestActiveOperationInformer(t *testing.T) {
 		updated := newOperationFixture(opRID, clusterRID)
 		updated.CosmosETag = created.CosmosETag
 		updated.InstanceVersion = created.GetInstanceVersion()
-		updated.Status = arm.ProvisioningStateSucceeded
+		updated.Status = coreapi.ProvisioningStateSucceeded
 		_, err = resourcesDBClient.Operations(opRID.SubscriptionID).Replace(ctx, updated, nil)
 		require.NoError(t, err, "Replace operation to terminal")
 
@@ -817,15 +862,73 @@ func TestActiveOperationInformer(t *testing.T) {
 		// shouldDeliverItemFn returns false for terminal operations.
 		evt = waitForChannelEvent(t, events, eventDeadline)
 		require.Equal(t, watch.Deleted, evt.Type, "expected Deleted when operation becomes terminal")
-		deletedOp := evt.Object.(*api.Operation)
+		deletedOp := evt.Object.(*coreapi.Operation)
 		require.Truef(t, strings.EqualFold(deletedOp.GetResourceID().String(), opRID.String()),
 			"Deleted event resourceID %q != operation %q", deletedOp.GetResourceID().String(), opRID.String())
-		require.Equal(t, arm.ProvisioningStateSucceeded, deletedOp.Status,
+		require.Equal(t, coreapi.ProvisioningStateSucceeded, deletedOp.Status,
 			"Deleted event must carry the terminal status that caused removal")
 
 		// The lister must no longer find the operation.
 		_, err = activeOpLister.Get(ctx, testSubscriptionID, opRID.Name)
 		require.Error(t, err, "lister.Get must return an error after the operation became terminal")
+	})
+}
+
+// TestListActiveOperationsExcludesSoftDeleted verifies that
+// ListActiveOperations does not return operations that have been soft-deleted.
+func TestListActiveOperationsExcludesSoftDeleted(t *testing.T) {
+	integrationutils.WithAndWithoutCosmos(t, func(t *testing.T, withMock bool) {
+		ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+		ctx = utils.ContextWithLogger(ctx, integrationutils.DefaultLogger(t))
+
+		var (
+			storage integrationutils.StorageIntegrationTestInfo
+			err     error
+		)
+		if withMock {
+			storage, err = integrationutils.NewMockCosmosFromTestingEnv(ctx, t)
+		} else {
+			storage, err = integrationutils.NewCosmosFromTestingEnv(ctx, t)
+		}
+		require.NoError(t, err, "create test storage")
+		defer func() {
+			cancel()
+			cleanupCtx := utils.ContextWithLogger(context.Background(), integrationutils.DefaultLogger(t))
+			storage.Cleanup(cleanupCtx)
+		}()
+
+		resourcesDBClient := storage.ResourcesDBClient()
+
+		clusterRID := metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+			"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.RedHatOpenShift/hcpOpenShiftClusters/list-active-op-%d",
+			testSubscriptionID, testResourceGroup, time.Now().UnixNano())))
+		opRID := metadataapi.Must(azcorearm.ParseResourceID(fmt.Sprintf(
+			"/subscriptions/%s/providers/Microsoft.RedHatOpenShift/hcpOperationStatuses/list-active-op-%d",
+			testSubscriptionID, time.Now().UnixNano())))
+
+		op := newOperationFixture(opRID, clusterRID)
+		_, err = resourcesDBClient.Operations(opRID.SubscriptionID).Create(ctx, op, nil)
+		require.NoError(t, err, "Create operation")
+
+		iter := resourcesDBClient.Operations(opRID.SubscriptionID).ListActiveOperations(nil)
+		found := false
+		for _, item := range iter.Items(ctx) {
+			if strings.EqualFold(item.GetResourceID().String(), opRID.String()) {
+				found = true
+			}
+		}
+		require.NoError(t, iter.GetError(), "ListActiveOperations before delete")
+		require.True(t, found, "active operation must appear in ListActiveOperations before delete")
+
+		err = resourcesDBClient.Operations(opRID.SubscriptionID).Delete(ctx, opRID.Name)
+		require.NoError(t, err, "Delete operation")
+
+		iter = resourcesDBClient.Operations(opRID.SubscriptionID).ListActiveOperations(nil)
+		for _, item := range iter.Items(ctx) {
+			require.Falsef(t, strings.EqualFold(item.GetResourceID().String(), opRID.String()),
+				"soft-deleted operation %q must not appear in ListActiveOperations", opRID.String())
+		}
+		require.NoError(t, iter.GetError(), "ListActiveOperations after delete")
 	})
 }
 

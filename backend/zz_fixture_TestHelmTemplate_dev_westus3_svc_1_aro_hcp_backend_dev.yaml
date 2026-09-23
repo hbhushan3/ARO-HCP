@@ -154,6 +154,7 @@ spec:
           matchLabels:
             app: aro-hcp-backend
       serviceAccountName: 'backend'
+      priorityClassName: service-lifecycle-critical
       volumes:
       - name: backend-service-key-vault
         csi:
@@ -173,6 +174,10 @@ spec:
         - "http://clusters-service.clusters-service.svc.cluster.local:8000"
         - "--azure-runtime-config-path"
         - "/configs/azure-runtime-config/config.yaml"
+        - "--backup-schedule-cadence"
+        - "production"
+        - "--backup-schedule-state"
+        - "Enabled"
         - "--azure-first-party-application-certificate-bundle-path"
         - "/secrets/backend-service-key-vault/fpa-cert-bundle"
         - "--azure-first-party-application-client-id"
@@ -225,10 +230,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: ""
-        - name: OTEL_TRACES_EXPORTER
-          value: ""
         - name: AZURE_TOKEN_CREDENTIALS
           value: "WorkloadIdentityCredential"
         ports:
@@ -238,8 +239,8 @@ spec:
           protocol: TCP
         resources:
           requests:
-            cpu: 100m
-            memory: 500Mi
+            cpu: 475m
+            memory: 1Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

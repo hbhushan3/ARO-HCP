@@ -6,6 +6,33 @@ For more information about ARO HCP environments, see the [ARO HCP Environments d
 
 ## Writing and running new E2E Test cases
 
+### SWIFT Networking
+
+The newer API-version default cluster parameters set `DisableSwift = true` to
+reduce consumption of management-cluster SWIFT NICs. The request builder sets
+`aro-hcp.experimental.cluster.disable-swift: "true"` and omits
+`properties.platform.vnetIntegrationSubnetId`. The customer subscription must
+have the `ExperimentalReleaseFeatures` AFEC registered; there is no fallback to
+SWIFT when the opt-in is unavailable. The `2024-06-10-preview` helpers retain
+their existing non-SWIFT behavior.
+
+Set `clusterParams.DisableSwift = false` explicitly for private API or private
+KMS scenarios, which always require VNet integration. Public SWIFT coverage is
+retained by the OCP-version install table (`2025-12-23-preview`), node-pool
+deletion (`2026-09-01-preview`), cluster/node-pool active versions
+(`2026-10-01-preview`), and the independent HyperShift presubmit test. The install
+table covers each available OCP release line; entries without resolvable releases
+skip before creating a cluster. There is not yet a `2026-06-30-preview` creation
+test, and `2024-06-10-preview` cannot express SWIFT networking on creation.
+Private application ingress alone does not require SWIFT. Customer infrastructure
+still creates the integration subnet, but non-SWIFT requests do not use it.
+
+The opt-in authorizes creation only. Networking remains immutable: removing the
+tag or revoking AFEC does not change an existing cluster's networking or prevent
+ordinary updates. An honored `"true"` tag together with an integration subnet is
+rejected. Tag names are case-insensitive; values must be exactly `"true"` or
+`"false"`. Without AFEC, the tag is ignored and normal subnet requirements apply.
+
 ### Resource Naming
 
 > **Important:** These tests are running in parallel so it is **VITAL** that we avoid naming collisions with other tests that may be running in CI at the same time. This may break CI runs until the duplicate resources are removed!
@@ -71,8 +98,19 @@ You can also redefine default OpenShift versions the E2E test cases will use
 when deploying ARO HCP hosted cluster, eg.:
 
 ```bash
+$ export ARO_HCP_OPENSHIFT_CONTROLPLANE_VERSION=4.21
+$ export ARO_HCP_OPENSHIFT_NODEPOOL_VERSION=4.21.0
+```
+
+When `ARO_HCP_OPENSHIFT_CONTROLPLANE_VERSION` is set, you can also set
+`ARO_HCP_OPENSHIFT_LATEST_Z_STREAM=true` to resolve that major.minor (or full
+semver) to the latest z-stream install version in the active channel group
+(`ARO_HCP_OPENSHIFT_CHANNEL_GROUP`, default `candidate`):
+
+```bash
 $ export ARO_HCP_OPENSHIFT_CONTROLPLANE_VERSION=4.20
-$ export ARO_HCP_OPENSHIFT_NODEPOOL_VERSION=4.20.15
+$ export ARO_HCP_OPENSHIFT_LATEST_Z_STREAM=true
+# e.g. resolves to 4.20.15 (whatever is latest in the channel)
 ```
 
 So finally, you can run a particular test case:
@@ -377,6 +415,10 @@ API usage and compatibility:
 Positivity labels:
 
 - `Positive`/`Negative`: indicates positive/negative test scenarios
+
+Retry labels:
+
+- `allow-retry`: marks a test as safe to auto-retry during an EV2 Stage/Prod gating run when it fails due to a known, actively tracked issue. Temporary by design (tracked in AROSLSRE-1721): every use must have an owner and a tracking issue, and must be removed once the underlying issue is fixed.
 
 ### Assertions
 
